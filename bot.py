@@ -217,10 +217,15 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     )
 
     # 5. 执行 FFmpeg
+    # 修复：移除 -reconnect_streamed 1 以允许 FFmpeg 针对 MP4 进行 seek 操作 (解决 moov atom not found)
+    # 优化：添加 User-Agent 伪装
+    # 优化：添加 probesize 和 analyzeduration 增加识别成功率
     cmd = [
         "ffmpeg", 
         "-re", 
-        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+        "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "-reconnect", "1", "-reconnect_delay_max", "5",
+        "-probesize", "10M", "-analyzeduration", "10M",
         "-i", src, 
         "-c:v", "libx264", "-preset", "ultrafast", "-g", "60",
         "-c:a", "aac", "-ar", "44100", "-b:a", "128k", 
