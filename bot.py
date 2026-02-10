@@ -8,7 +8,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 
 # --- 导入模块 ---
-from modules.config import load_config, save_config, is_owner, TOKEN, OWNER_ID
+from modules.config import load_config, save_config, is_owner, TOKEN, OWNER_ID, CONFIG_FILE
 from modules.utils import get_local_ip, get_all_ips, get_env_report, scan_local_videos, scan_local_audio, scan_local_images, format_size
 from modules.alist import get_alist_pid, fix_alist_config
 from modules.stream import run_ffmpeg_stream, stop_ffmpeg_process, get_stream_status, get_log_content
@@ -508,6 +508,20 @@ async def stop_stream_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     print(f"🚀 机器人启动中 (Modular Version)...")
+    
+    # --- 启动自检逻辑 ---
+    print("------------------------------------------")
+    if not os.path.exists(CONFIG_FILE):
+        print(f"⚠️  警告: 配置文件 {CONFIG_FILE} 未找到。")
+        print("   (新手机部署是正常的，请在机器人启动后在设置中重新添加密钥)")
+    
+    try:
+        env_report = get_env_report()
+        print(env_report.replace("*", "").replace("`", "")) # 打印纯文本报告到控制台
+    except Exception as e:
+        print(f"⚠️  环境检查失败: {e}")
+    print("------------------------------------------")
+
     config = load_config()
     final_token = config.get('token')
     
@@ -515,16 +529,22 @@ def main():
         print("❌ 错误: TOKEN 未配置！请编辑 modules/config.py 或 bot_config.json")
         return
 
-    application = ApplicationBuilder().token(final_token).build()
-    
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("stream", start_stream_cmd))
-    application.add_handler(CommandHandler("stopstream", stop_stream_cmd))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_input))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    
-    print("✅ Polling 开始... (按 Ctrl+C 停止)")
-    application.run_polling()
+    try:
+        application = ApplicationBuilder().token(final_token).build()
+        
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("stream", start_stream_cmd))
+        application.add_handler(CommandHandler("stopstream", stop_stream_cmd))
+        application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_input))
+        application.add_handler(CallbackQueryHandler(button_callback))
+        
+        print("✅ Polling 开始... (按 Ctrl+C 停止)")
+        application.run_polling()
+    except Exception as e:
+        print(f"❌ 启动崩溃: {e}")
+        print("💡 提示: 常见错误如 'NetworkError' 可能是因为缺少 openssl-tool，请运行 'pkg install openssl-tool'")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == '__main__':
     main()

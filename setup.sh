@@ -50,15 +50,23 @@ echo -e "\n${BLUE}[2/6] 修复权限...${NC}"
 chmod +x *.py *.sh
 chmod 755 .
 
-# 3. 依赖安装
+# 3. 依赖安装 (增强版)
 echo -e "\n${BLUE}[3/6] 检查依赖...${NC}"
+# 安装基础工具和 SSL 库 (修复 Telegram 连接问题)
+pkg install termux-tools openssl-tool -y
+
 if ! command -v ffmpeg &> /dev/null; then
+    echo "  🎥 安装 FFmpeg..."
     pkg install ffmpeg -y
 fi
 if ! command -v alist &> /dev/null; then
+    echo "  🗂 安装 Alist..."
     pkg install alist -y
 fi
-pip install -r requirements.txt > /dev/null 2>&1
+
+echo "  🐍 安装 Python 依赖..."
+pip install --upgrade pip > /dev/null 2>&1
+pip install -r requirements.txt
 
 # 4. PM2 守护进程配置
 echo -e "\n${BLUE}[4/6] 配置后台进程...${NC}"
@@ -99,4 +107,5 @@ echo -e "\n${BLUE}=======================================${NC}"
 echo -e "       ${GREEN}🚀 部署完成！${NC}"
 echo -e "${BLUE}=======================================${NC}"
 echo -e "机器人正在后台运行。"
+echo -e "请先运行: ${YELLOW}termux-setup-storage${NC} 确保有存储权限"
 echo -e "日志查看: ${YELLOW}pm2 log termux-bot${NC}"
