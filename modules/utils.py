@@ -56,25 +56,25 @@ def format_size(size):
         size /= 1024
     return f"{size:.1f}TB"
 
-def scan_local_videos():
-    """扫描本地视频文件"""
+def _scan_files(extensions, extra_paths=[]):
+    """通用的文件扫描函数"""
     search_paths = [
         "/sdcard/Download",
-        "/sdcard/Movies",
-        "/sdcard/DCIM/Camera",
-        os.getcwd() # 当前目录
-    ]
-    video_extensions = ('.mp4', '.mkv', '.avi', '.flv', '.mov', '.ts')
+        "/sdcard/Music",
+        "/sdcard/Pictures",
+        "/sdcard/DCIM",
+        os.getcwd()
+    ] + extra_paths
+    
     found_files = []
 
     for path in search_paths:
         if not os.path.exists(path):
             continue
         try:
-            # 仅扫描一级目录，避免卡顿
             with os.scandir(path) as it:
                 for entry in it:
-                    if entry.is_file() and entry.name.lower().endswith(video_extensions):
+                    if entry.is_file() and entry.name.lower().endswith(extensions):
                         found_files.append({
                             "name": entry.name,
                             "path": entry.path,
@@ -84,9 +84,18 @@ def scan_local_videos():
         except Exception:
             pass
     
-    # 按修改时间倒序排列（最新的在前）
+    # 按修改时间倒序
     found_files.sort(key=lambda x: x['mtime'], reverse=True)
-    return found_files[:10] # 只返回最新的10个
+    return found_files[:15] # 返回最新的15个
+
+def scan_local_videos():
+    return _scan_files(('.mp4', '.mkv', '.avi', '.flv', '.mov', '.ts'))
+
+def scan_local_audio():
+    return _scan_files(('.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg'))
+
+def scan_local_images():
+    return _scan_files(('.jpg', '.jpeg', '.png', '.bmp', '.webp'))
 
 def get_env_report():
     """生成环境报告文本"""

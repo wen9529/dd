@@ -31,8 +31,13 @@ def get_log_content(max_chars=1500):
         content = "日志文件为空，FFmpeg 可能尚未输出任何信息。"
     return content
 
-async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = None):
-    """执行推流逻辑"""
+async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = None, background_image: str = None):
+    """执行推流逻辑
+    Args:
+        raw_src: 视频或音频源路径
+        custom_rtmp: 自定义 RTMP 地址
+        background_image: 静态图片路径 (如果提供此参数，则开启 音频+图片 模式)
+    """
     global ffmpeg_process
     
     # 使用 effective_message 以兼容 CommandHandler (update.message) 和 CallbackQueryHandler (update.callback_query.message)
@@ -74,11 +79,15 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     
     # 4. 发送反馈
     display_rtmp = rtmp_url[:15] + "..." if len(rtmp_url) > 15 else rtmp_url
+    
+    mode_text = "🎵 音频+图片模式" if background_image else ("💿 本地视频模式" if is_local_file else "🌐 网络流/Alist模式")
+    
     await message.reply_text(
-        f"🚀 **启动推流任务**\n\n"
-        f"📄 **源**: `{raw_src}`\n"
+        f"🚀 **启动推流任务** (极速模式)\n\n"
+        f"📄 **源**: `{os.path.basename(src)}`\n"
+        f"🖼 **图**: `{os.path.basename(background_image) if background_image else '无'}`\n"
         f"📡 **目标**: `{display_rtmp}`\n"
-        f"{'💿 本地文件模式' if is_local_file else '🌐 网络流/Alist模式'}\n\n"
+        f"{mode_text}\n\n"
         "⏳ 正在启动进程...", 
         parse_mode='Markdown'
     )
@@ -98,7 +107,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         "-hide_banner",
     ]
     
-    if not is_local_file:
+    if not is_local_file and not background_image:
         cmd.extend([
             "-headers", headers_str,
             "-reconnect", "1", 
@@ -110,27 +119,53 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             "-rw_timeout", "15000000",
         ])
 
+    cmd.extend(["-probesize", "10M", "-analyzeduration", "10M"])
+
+    if background_image:
+        # --- 音频 + 图片模式 ---
+        cmd.extend([
+            "-loop", "1",           # 循环图片
+            "-framerate", "2",      # 静态图不需要高帧率，2fps 足够
+            "-i", background_image, # 输入0: 图片
+            "-re",                  # 按照音频速率读取
+            "-i", src,              # 输入1: 音频
+            
+            # 视频编码 (图片)
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-tune", "stillimage",  # 优化静态图
+            "-pix_fmt", "yuv420p",
+            "-g", "10",             # 关键帧间隔
+            "-b:v", "1000k",        # 静态图码率可以低一点
+            
+            # 音频编码
+            "-c:a", "aac", 
+            "-ar", "44100", 
+            "-b:a", "128k",
+            
+            "-shortest"             # 音频结束时停止推流
+        ])
+    else:
+        # --- 纯视频模式 ---
+        cmd.extend([
+            "-re",
+            "-i", src, 
+            
+            "-c:v", "libx264", 
+            "-preset", "ultrafast", 
+            "-tune", "zerolatency", 
+            "-b:v", "2500k", "-maxrate", "3000k", "-bufsize", "6000k",
+            "-pix_fmt", "yuv420p",
+            "-g", "30",
+            
+            "-c:a", "aac", "-ar", "44100", "-b:a", "128k", 
+        ])
+
+    # 输出通用参数
     cmd.extend([
-        "-probesize", "10M", 
-        "-analyzeduration", "10M",
-        "-re",
-        "-i", src, 
-        
-        # 视频编码参数 (Telegram 优化)
-        "-c:v", "libx264", 
-        "-preset", "veryfast",
-        "-b:v", "3000k", "-maxrate", "3000k", "-bufsize", "6000k", # 限制码率防止带宽溢出
-        "-pix_fmt", "yuv420p",
-        "-g", "60",
-        
-        # 音频编码参数
-        "-c:a", "aac", "-ar", "44100", "-b:a", "128k", 
-        
-        # 输出格式参数
         "-f", "flv", 
         "-flvflags", "no_duration_filesize",
-        "-rw_timeout", "30000000", # 输出超时 30秒
-        
+        "-rw_timeout", "30000000", 
         rtmp_url
     ])
     
@@ -138,7 +173,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         log_file = open(FFMPEG_LOG_FILE, "w")
         ffmpeg_process = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
         
-        await asyncio.sleep(3)
+        await asyncio.sleep(2) 
         
         if ffmpeg_process.poll() is not None:
              log_file.close()
@@ -174,7 +209,8 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
              await message.reply_text(
                  f"✅ **推流已稳定运行**\n"
                  f"PID: {ffmpeg_process.pid}\n\n"
-                 f"如果画面仍未显示，请点击下方 [查看实时日志] 排查问题。",
+                 f"模式: {mode_text}\n"
+                 f"画面应在 5秒内出现。如果仍黑屏，请检查网络上传带宽。",
                  reply_markup=keyboard,
                  parse_mode='Markdown'
              )

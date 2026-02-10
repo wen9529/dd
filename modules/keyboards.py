@@ -2,10 +2,10 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 def get_main_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚀 链接推流", callback_data="btn_start_stream"), InlineKeyboardButton("📂 本地推流", callback_data="btn_local_stream")],
-        [InlineKeyboardButton("🗂 Alist 管理", callback_data="btn_alist"), InlineKeyboardButton("📺 推流设置", callback_data="btn_stream_settings")],
-        [InlineKeyboardButton("🔍 环境自检", callback_data="btn_env"), InlineKeyboardButton("♻️ 检查更新", callback_data="btn_update")],
-        [InlineKeyboardButton("🔄 刷新菜单", callback_data="btn_refresh")]
+        [InlineKeyboardButton("🚀 链接推流", callback_data="btn_start_stream"), InlineKeyboardButton("📂 本地视频", callback_data="btn_local_stream")],
+        [InlineKeyboardButton("🎵 音频推流", callback_data="btn_audio_stream"), InlineKeyboardButton("📺 推流设置", callback_data="btn_stream_settings")],
+        [InlineKeyboardButton("🗂 Alist 管理", callback_data="btn_alist"), InlineKeyboardButton("♻️ 检查更新", callback_data="btn_update")],
+        [InlineKeyboardButton("🔍 环境自检", callback_data="btn_env"), InlineKeyboardButton("🔄 刷新菜单", callback_data="btn_refresh")]
     ])
 
 def get_alist_keyboard(is_running):

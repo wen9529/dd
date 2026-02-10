@@ -9,7 +9,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Messa
 
 # --- 导入模块 ---
 from modules.config import load_config, save_config, is_owner, TOKEN, OWNER_ID
-from modules.utils import get_local_ip, get_all_ips, get_env_report, scan_local_videos, format_size
+from modules.utils import get_local_ip, get_all_ips, get_env_report, scan_local_videos, scan_local_audio, scan_local_images, format_size
 from modules.alist import get_alist_pid, fix_alist_config
 from modules.stream import run_ffmpeg_stream, stop_ffmpeg_process, get_stream_status, get_log_content
 from modules.keyboards import get_main_keyboard, get_alist_keyboard, get_stream_settings_keyboard, get_back_keyboard
@@ -36,6 +36,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "btn_refresh" or data == "btn_back_main":
         context.user_data['state'] = None
+        # 清理临时数据
+        if 'temp_audio' in context.user_data: del context.user_data['temp_audio']
+        
         await query.edit_message_text(
             f"👑 **Termux 控制台**\n当前用户: `{user_id}`\n",
             reply_markup=get_main_keyboard(),
@@ -55,19 +58,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     
     elif data == "btn_local_stream":
-        await query.edit_message_text("🔍 正在扫描本地视频文件 (Download/Movies)...", parse_mode='Markdown')
+        await query.edit_message_text("🔍 正在扫描本地视频文件...", parse_mode='Markdown')
         videos = scan_local_videos()
         
         if not videos:
             await query.edit_message_text(
                 "❌ **未找到视频文件**\n\n"
-                "已扫描路径:\n"
-                "• `/sdcard/Download`\n"
-                "• `/sdcard/Movies`\n"
-                "• `/sdcard/DCIM/Camera`\n"
-                "• 当前目录\n\n"
-                "⚠️ 如果您确认有文件，请检查 Termux 存储权限：\n"
-                "请在终端运行: `termux-setup-storage`",
+                "请检查 `Download`, `Movies` 目录或执行 `termux-setup-storage`",
                 reply_markup=get_back_keyboard(),
                 parse_mode='Markdown'
             )
@@ -82,10 +79,89 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("🔙 返回主菜单", callback_data="btn_back_main")])
         
         await query.edit_message_text(
-            "📂 **本地视频列表** (最新的10个):\n点击即可开始推流。",
+            "📂 **本地视频列表** (最新的15个):\n点击即可开始推流。",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
+    
+    # --- 音频推流流程 ---
+    elif data == "btn_audio_stream":
+        await query.edit_message_text("🔍 正在扫描本地音频文件...", parse_mode='Markdown')
+        audios = scan_local_audio()
+        
+        if not audios:
+             await query.edit_message_text(
+                "❌ **未找到音频文件**\n\n"
+                "请检查 `Download`, `Music` 目录。\n支持格式: mp3, flac, wav, m4a",
+                reply_markup=get_back_keyboard(),
+                parse_mode='Markdown'
+            )
+             return
+        
+        context.user_data['local_audios'] = audios
+        keyboard = []
+        for idx, v in enumerate(audios):
+            btn_text = f"🎵 {v['name']} ({format_size(v['size'])})"
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"play_aud_{idx}")])
+        
+        keyboard.append([InlineKeyboardButton("🔙 返回主菜单", callback_data="btn_back_main")])
+        
+        await query.edit_message_text(
+            "📂 **步骤 1/2: 选择音频文件**\n",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+
+    elif data.startswith("play_aud_"):
+        # 选中音频，现在选择图片
+        idx = int(data.split("_")[-1])
+        audios = context.user_data.get('local_audios', [])
+        if 0 <= idx < len(audios):
+             context.user_data['temp_audio'] = audios[idx]['path']
+             
+             # 扫描图片
+             images = scan_local_images()
+             if not images:
+                 await query.answer("⚠️ 未找到图片，将使用黑屏推流", show_alert=False)
+                 # 如果没有图片，也可以做逻辑，这里暂时提示
+             
+             context.user_data['local_images'] = images
+             keyboard = []
+             for img_idx, img in enumerate(images):
+                 btn_text = f"🖼 {img['name']}"
+                 keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"use_img_{img_idx}")])
+            
+             keyboard.append([InlineKeyboardButton("🔙 返回重选音频", callback_data="btn_audio_stream")])
+             
+             await query.edit_message_text(
+                f"📂 **步骤 2/2: 选择背景图片**\n"
+                f"已选音频: `{audios[idx]['name']}`\n\n"
+                "请选择一张图片作为视频背景：",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+             )
+        else:
+             await query.answer("❌ 文件索引无效", show_alert=True)
+
+    elif data.startswith("use_img_"):
+        # 选中图片，开始推流
+        img_idx = int(data.split("_")[-1])
+        images = context.user_data.get('local_images', [])
+        audio_path = context.user_data.get('temp_audio')
+        
+        if not audio_path:
+             await query.answer("❌ 音频路径丢失，请重新操作", show_alert=True)
+             return
+             
+        if 0 <= img_idx < len(images):
+             image_path = images[img_idx]['path']
+             # 开始推流
+             await run_ffmpeg_stream(update, audio_path, background_image=image_path)
+             # 清理
+             del context.user_data['temp_audio']
+        else:
+             await query.answer("❌ 图片索引无效", show_alert=True)
+
 
     elif data.startswith("play_loc_"):
         try:
