@@ -8,6 +8,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 
 # --- 硬编码配置区域 ---
+# ⚠️ 请将下方的 OWNER_ID 修改为您在 Telegram 中获取到的 ID
 TOKEN = "7565918204:AAH3E3Bb9Op7Xv-kezL6GISeJj8mA6Ycwug"
 OWNER_ID = 1878794912
 # --------------------
@@ -23,7 +24,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def is_owner(user_id):
-    return str(user_id) == str(OWNER_ID)
+    # 强制转换为字符串比较，防止类型错误
+    return str(user_id).strip() == str(OWNER_ID).strip()
 
 # --- 辅助功能 ---
 def check_program(cmd):
@@ -100,7 +102,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     
     if not is_owner(user_id):
-        await query.answer("❌ 无权操作", show_alert=True)
+        await query.answer(f"❌ 权限拒绝\n你的ID: {user_id}\n管理员ID: {OWNER_ID}", show_alert=True)
         return
 
     await query.answer() # 停止加载动画
@@ -269,7 +271,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
     else:
-        await update.message.reply_text(f"👋 你好，我是 Termux 机器人。\n你的 ID: `{user_id}`\n\n(请将此 ID 填入代码中的 OWNER_ID 字段以获取管理员权限)", parse_mode='Markdown')
+        # 如果不是主人，明确显示 ID 和修改方法
+        await update.message.reply_text(
+            f"🚫 **访问被拒绝**\n\n"
+            f"您的 Telegram ID: `{user_id}`\n"
+            f"机器人配置的 OWNER_ID: `{OWNER_ID}`\n\n"
+            f"⚠️ **未看到菜单原因**:\n"
+            f"您当前的账号 ID 与代码中配置的 `OWNER_ID` 不一致。\n\n"
+            f"📝 **解决方法**:\n"
+            f"1. 复制上面的 ID: `{user_id}`\n"
+            f"2. 打开 Termux 编辑 `bot.py`\n"
+            f"3. 找到 `OWNER_ID = ...` 并修改\n"
+            f"4. 运行 `pm2 restart termux-bot`",
+            parse_mode='Markdown'
+        )
 
 def main():
     print(f"🚀 正在启动 Termux 机器人...")
