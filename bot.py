@@ -5,6 +5,7 @@ import os
 import signal
 import psutil
 import sys
+import socket
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 
@@ -66,12 +67,52 @@ def get_alist_pid():
             continue
     return None
 
+def get_local_ip():
+    """
+    获取本机局域网 IP。
+    优化逻辑：优先检测 Wi-Fi (wlan0) 和 有线 (eth0)，忽略 VPN (tun) 接口。
+    """
+    try:
+        # 获取所有网络接口
+        interfaces = psutil.net_if_addrs()
+        
+        # 1. 优先列表：Termux/Android 下通常 Wi-Fi 是 wlan0
+        priority_interfaces = ['wlan0', 'eth0', 'wlan1']
+        
+        for iface in priority_interfaces:
+            if iface in interfaces:
+                for snic in interfaces[iface]:
+                    if snic.family == socket.AF_INET:
+                        print(f"✅ 从优先接口 {iface} 获取到 IP: {snic.address}")
+                        return snic.address
+
+        # 2. 如果优先接口没找到，遍历其他接口，但排除 VPN 和 本地回环
+        # 排除列表: tun (VPN), ppp (代理), lo (本地), rmnet (移动数据-通常外部不可访)
+        exclude_prefixes = ('tun', 'ppp', 'lo', 'docker', 'veth', 'rmnet')
+        
+        for name, snics in interfaces.items():
+            if name.lower().startswith(exclude_prefixes):
+                continue
+            
+            for snic in snics:
+                if snic.family == socket.AF_INET and not snic.address.startswith("127."):
+                    print(f"ℹ️ 从接口 {name} 获取到 IP: {snic.address}")
+                    return snic.address
+
+        # 3. Fallback: 实在找不到，返回 127.0.0.1
+        return "127.0.0.1"
+
+    except Exception as e:
+        print(f"❌ 获取 IP 出错: {e}")
+        return "127.0.0.1"
+
 def get_env_report():
     """生成环境报告文本"""
     ffmpeg_ver = check_program("ffmpeg")
     alist_ver = check_program("alist")
     alist_pid = get_alist_pid()
     ffmpeg_running = ffmpeg_process is not None and ffmpeg_process.poll() is None
+    local_ip = get_local_ip()
     
     cpu_usage = psutil.cpu_percent(interval=None)
     mem_info = psutil.virtual_memory()
@@ -79,6 +120,7 @@ def get_env_report():
 
     return (
         f"🖥 **服务器环境报告**\n\n"
+        f"🌐 **局域网IP**: `{local_ip}`\n(已过滤 VPN 地址)\n\n"
         f"🎥 **FFmpeg**:\n"
         f"• 安装状态: {'✅ ' + ffmpeg_ver if ffmpeg_ver else '❌ 未安装'}\n"
         f"• 推流任务: {'🔴 进行中' if ffmpeg_running else '⚪ 空闲'}\n\n"
@@ -147,7 +189,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pid = get_alist_pid()
         await query.edit_message_text(f"🗂 **Alist 面板**\n状态: {'✅ 运行中' if pid else '🔴 已停止'}", reply_markup=get_alist_keyboard(bool(pid)), parse_mode='Markdown')
     elif data == "btn_alist_info":
-        await context.bot.send_message(chat_id=user_id, text="🌐 地址: `http://127.0.0.1:5244`", parse_mode='Markdown')
+        local_ip = get_local_ip()
+        await context.bot.send_message(
+            chat_id=user_id, 
+            text=f"🌐 **Alist 访问地址**:\n\n📡 **局域网**: `http://{local_ip}:5244`\n(适合同一WiFi下的其他设备)\n\n📱 **本机**: `http://127.0.0.1:5244`\n(仅限 Termux 本机访问)", 
+            parse_mode='Markdown'
+        )
     elif data == "btn_alist_admin":
         try:
             res = subprocess.check_output(["alist", "admin"], text=True).strip()
