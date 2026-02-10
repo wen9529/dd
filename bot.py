@@ -154,9 +154,74 @@ def get_env_report():
         f"• 内存: {mem_usage}"
     )
 
+# --- 核心逻辑 ---
+async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = None):
+    """执行推流的通用函数"""
+    global ffmpeg_process
+    
+    # 1. 检查是否已有任务
+    if ffmpeg_process and ffmpeg_process.poll() is None:
+        await update.message.reply_text("⚠️ **推流正在进行中**\n请先使用 `/stopstream` 停止当前任务，或等待其结束。", parse_mode='Markdown')
+        return
+
+    # 2. 获取 RTMP 地址
+    config = load_config()
+    server = config.get('rtmp_server', '')
+    key = config.get('stream_key', '')
+    legacy_rtmp = config.get('rtmp', '')
+    
+    rtmp_url = ""
+    if custom_rtmp:
+        rtmp_url = custom_rtmp
+    elif server and key:
+        rtmp_url = server + key
+    elif legacy_rtmp:
+        rtmp_url = legacy_rtmp
+        
+    if not rtmp_url:
+        await update.message.reply_text("❌ **未配置推流地址**\n请先在菜单中点击 [📺 推流设置] 进行配置，或联系管理员。", parse_mode='Markdown')
+        return
+
+    # 3. 处理源链接
+    # 如果是以 / 开头的路径，默认为 Alist 本地路径，自动添加前缀
+    src = raw_src.strip()
+    if src.startswith("/"):
+        encoded_src = quote(src, safe='/')
+        src = f"http://127.0.0.1:5244{encoded_src}"
+    # 如果是 http/https 开头的，直接使用
+    
+    # 4. 发送反馈
+    display_rtmp = rtmp_url[:15] + "..." if len(rtmp_url) > 15 else rtmp_url
+    await update.message.reply_text(
+        f"🚀 **启动推流任务**\n\n"
+        f"📄 **源地址**: `{raw_src}`\n"
+        f"🔗 **处理后**: `{src}`\n"
+        f"📡 **推流目标**: `{display_rtmp}`", 
+        parse_mode='Markdown'
+    )
+
+    # 5. 执行 FFmpeg
+    cmd = [
+        "ffmpeg", 
+        "-re", 
+        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+        "-i", src, 
+        "-c:v", "libx264", "-preset", "ultrafast", "-g", "60",
+        "-c:a", "aac", "-ar", "44100", "-b:a", "128k", 
+        "-f", "flv", 
+        rtmp_url
+    ]
+    
+    try:
+        ffmpeg_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        await update.message.reply_text(f"✅ 推流进程已启动 (PID: {ffmpeg_process.pid})")
+    except Exception as e:
+        await update.message.reply_text(f"❌ 启动失败: {e}")
+
 # --- 键盘菜单 ---
 def get_main_keyboard():
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 开始推流", callback_data="btn_start_stream")],
         [InlineKeyboardButton("🗂 Alist 管理", callback_data="btn_alist"), InlineKeyboardButton("📺 推流设置", callback_data="btn_stream_settings")],
         [InlineKeyboardButton("🔍 环境自检", callback_data="btn_env"), InlineKeyboardButton("♻️ 检查更新", callback_data="btn_update")],
         [InlineKeyboardButton("🔄 刷新菜单", callback_data="btn_refresh")]
@@ -197,6 +262,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"👑 **Termux 控制台**\n当前用户: `{user_id}`\n",
             reply_markup=get_main_keyboard(),
+            parse_mode='Markdown'
+        )
+    elif data == "btn_start_stream":
+        context.user_data['state'] = 'waiting_stream_link'
+        await query.edit_message_text(
+            "🎬 **准备推流**\n\n"
+            "请直接回复您要推流的 **视频链接** 或 **Alist 文件路径**。\n"
+            "(您可以直接从 Alist 复制链接并发送给我)\n\n"
+            "例如：\n"
+            "• `http://192.168.1.5:5244/d/电影/test.mp4`\n"
+            "• `/电影/test.mp4`\n\n"
+            "回复 `cancel` 取消。",
             parse_mode='Markdown'
         )
     elif data == "btn_env":
@@ -247,21 +324,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
              "📺 **推流配置面板**\n\n"
              f"🔗 **服务器地址**: \n`{server}`\n\n"
              f"🔑 **推流密钥**: \n`{display_key}`\n\n"
-             "👇 点击下方按钮修改，机器人会提示您直接回复。"
+             "👇 **修改配置**"
          )
          await query.edit_message_text(text, reply_markup=get_stream_settings_keyboard(), parse_mode='Markdown')
          
     elif data == "btn_edit_server":
         context.user_data['state'] = 'waiting_server'
         await query.edit_message_text(
-            "✍️ **请直接回复您的 RTMP 服务器地址**：\n\n例如：`rtmp://live-push.bilivideo.com/live-bvc/`\n\n(输入 `cancel` 取消)",
+            "✍️ **请回复 RTMP 服务器地址**：\n\n例如：`rtmp://live-push.bilivideo.com/live-bvc/`\n\n(回复 `cancel` 取消)",
             parse_mode='Markdown'
         )
         
     elif data == "btn_edit_key":
         context.user_data['state'] = 'waiting_key'
         await query.edit_message_text(
-            "✍️ **请直接回复您的 推流密钥**：\n\n例如：`?streamname=...` 或纯密钥字符串\n\n(输入 `cancel` 取消)",
+            "✍️ **请回复 推流密钥**：\n\n例如：`?streamname=...`\n\n(回复 `cancel` 取消)",
             parse_mode='Markdown'
         )
 
@@ -286,16 +363,18 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 操作已取消。", reply_markup=get_main_keyboard())
         return
 
-    if state == 'waiting_server':
-        # 简单的格式校验
-        if not text.startswith("rtmp"):
-            await update.message.reply_text("⚠️ 地址似乎不正确，建议以 `rtmp://` 开头。\n请重新输入，或输入 `cancel` 取消。")
-            return
-            
-        save_config({'rtmp_server': text})
-        await update.message.reply_text(f"✅ **RTMP 服务器地址已更新！**\n`{text}`", parse_mode='Markdown')
+    if state == 'waiting_stream_link':
+        # 清除状态，开始推流
         context.user_data['state'] = None
-        # 显示设置面板
+        await run_ffmpeg_stream(update, text)
+
+    elif state == 'waiting_server':
+        if not text.startswith("rtmp"):
+            await update.message.reply_text("⚠️ 地址建议以 `rtmp://` 开头。\n请重新输入，或输入 `cancel` 取消。")
+            return
+        save_config({'rtmp_server': text})
+        await update.message.reply_text(f"✅ **RTMP 服务器地址已更新！**", parse_mode='Markdown')
+        context.user_data['state'] = None
         await update.message.reply_text("👇 下一步", reply_markup=get_stream_settings_keyboard())
         
     elif state == 'waiting_key':
@@ -318,68 +397,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🚫 **未授权**")
 
 async def start_stream(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """通过命令启动推流"""
     if not is_owner(update.effective_user.id): return
-    global ffmpeg_process
-    if ffmpeg_process and ffmpeg_process.poll() is None:
-        await update.message.reply_text("⚠️ 已有推流在运行")
-        return
     
     if len(context.args) == 0:
-        await update.message.reply_text("用法: `/stream <Alist文件路径>`\n例如: `/stream /电影/test.mp4`", parse_mode='Markdown')
+        await update.message.reply_text("💡 **提示**: 您现在可以点击菜单中的 [🚀 开始推流] 按钮，然后直接发送链接。\n\n命令用法: `/stream <链接> [RTMP地址]`", parse_mode='Markdown')
         return
 
-    # --- 构造推流地址 ---
-    config = load_config()
-    server = config.get('rtmp_server', '')
-    key = config.get('stream_key', '')
-    legacy_rtmp = config.get('rtmp', '')
+    raw_src = ""
+    custom_rtmp = None
     
-    rtmp_url = ""
-    
-    # 优先使用 Server + Key 组合
-    if server and key:
-        rtmp_url = server + key
-    elif legacy_rtmp:
-        rtmp_url = legacy_rtmp
-    
-    # 允许命令行参数临时覆盖
     if len(context.args) > 1 and "rtmp" in context.args[-1]:
-         rtmp_url = context.args[-1]
+         custom_rtmp = context.args[-1]
          raw_src = " ".join(context.args[:-1]).strip()
     else:
          raw_src = " ".join(context.args).strip()
 
-    if not rtmp_url:
-        await update.message.reply_text("❌ **未配置推流地址**\n请点击菜单中的 [📺 推流设置] 进行配置。", parse_mode='Markdown')
-        return
-
-    # --- 处理源文件 ---
-    src = raw_src
-    if src.startswith("/"):
-        encoded_src = quote(src, safe='/')
-        src = f"http://127.0.0.1:5244{encoded_src}"
-    
-    display_rtmp = rtmp_url[:15] + "..." if len(rtmp_url) > 15 else rtmp_url
-
-    await update.message.reply_text(f"🚀 **启动直连推流**...\n\n📄 **文件**: `{raw_src}`\n🔗 **流地址**: `{src}`\n📡 **目标**: `{display_rtmp}`", parse_mode='Markdown')
-    
-    # FFmpeg 命令
-    cmd = [
-        "ffmpeg", 
-        "-re", 
-        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-        "-i", src, 
-        "-c:v", "libx264", "-preset", "ultrafast", "-g", "60",
-        "-c:a", "aac", "-ar", "44100", "-b:a", "128k", 
-        "-f", "flv", 
-        rtmp_url
-    ]
-    
-    try:
-        ffmpeg_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        await update.message.reply_text(f"✅ 推流进程已启动 (PID: {ffmpeg_process.pid})")
-    except Exception as e:
-        await update.message.reply_text(f"❌ 启动失败: {e}")
+    await run_ffmpeg_stream(update, raw_src, custom_rtmp)
 
 async def stop_stream(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(update.effective_user.id): return
@@ -405,7 +439,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("stream", start_stream))
     application.add_handler(CommandHandler("stopstream", stop_stream))
-    # 注册消息处理器，用于接收用户输入的配置
+    # 注册消息处理器，用于接收用户输入的配置和链接
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_input))
     application.add_handler(CallbackQueryHandler(button_callback))
     
