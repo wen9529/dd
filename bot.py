@@ -79,7 +79,8 @@ def get_env_report():
 def get_main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🗂 Alist 管理", callback_data="btn_alist"), InlineKeyboardButton("📺 推流说明", callback_data="btn_stream_help")],
-        [InlineKeyboardButton("🔍 环境自检", callback_data="btn_env"), InlineKeyboardButton("🔄 刷新菜单", callback_data="btn_refresh")]
+        [InlineKeyboardButton("🔍 环境自检", callback_data="btn_env"), InlineKeyboardButton("♻️ 检查更新", callback_data="btn_update")],
+        [InlineKeyboardButton("🔄 刷新菜单", callback_data="btn_refresh")]
     ])
 
 def get_alist_keyboard(is_running):
@@ -172,6 +173,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
              await context.bot.send_message(chat_id=user_id, text="❌ 获取密码失败", parse_mode='Markdown')
 
+    elif data == "btn_update":
+        await query.edit_message_text("♻️ 正在连接 Git 仓库检查更新...", parse_mode='Markdown')
+        try:
+            # 1. 检查更新
+            subprocess.run("git fetch", shell=True, check=True)
+            local_hash = subprocess.check_output("git rev-parse HEAD", shell=True, text=True).strip()
+            remote_hash = subprocess.check_output("git rev-parse @{u}", shell=True, text=True).strip()
+            
+            if local_hash != remote_hash:
+                await context.bot.send_message(chat_id=user_id, text="🚀 **发现新版本！**\n\n正在拉取代码并重启机器人，请稍候...", parse_mode='Markdown')
+                # 触发更新脚本，setup.sh 会重启 bot，所以这里 bot 进程会结束
+                subprocess.Popen("git pull && bash setup.sh", shell=True)
+            else:
+                commit_id = local_hash[:7]
+                await query.edit_message_text(f"✅ **当前已是最新版本**\n\nCommit: `{commit_id}`\n\n后台自动更新进程(PM2) 也会每分钟自动检查。", reply_markup=get_back_keyboard(), parse_mode='Markdown')
+        except Exception as e:
+            await query.edit_message_text(f"❌ 检查更新失败:\n{str(e)}", reply_markup=get_back_keyboard(), parse_mode='Markdown')
+
 
 # --- 命令处理 ---
 async def check_env(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -250,7 +269,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
     else:
-        await update.message.reply_text(f"👋 你好，我是 Termux 机器人。\n你的 ID: `{user_id}`", parse_mode='Markdown')
+        await update.message.reply_text(f"👋 你好，我是 Termux 机器人。\n你的 ID: `{user_id}`\n\n(请将此 ID 填入代码中的 OWNER_ID 字段以获取管理员权限)", parse_mode='Markdown')
 
 def main():
     print(f"🚀 正在启动 Termux 机器人...")
