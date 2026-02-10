@@ -1,0 +1,8 @@
+{
+  "name": "termux-python-bot",
+  "version": "1.0.0",
+  "description": "Python Project. Use bash setup.sh to run.",
+  "scripts": {
+    "start": "echo 'Please run: bash setup.sh'"
+  }
+}
