@@ -95,6 +95,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     cmd = [
         "ffmpeg", 
         "-y",
+        "-hide_banner",
     ]
     
     if not is_local_file:
@@ -110,13 +111,26 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         ])
 
     cmd.extend([
-        "-probesize", "50M", 
-        "-analyzeduration", "50M",
+        "-probesize", "10M", 
+        "-analyzeduration", "10M",
         "-re",
         "-i", src, 
-        "-c:v", "libx264", "-preset", "veryfast", "-g", "60",
+        
+        # 视频编码参数 (Telegram 优化)
+        "-c:v", "libx264", 
+        "-preset", "veryfast",
+        "-b:v", "3000k", "-maxrate", "3000k", "-bufsize", "6000k", # 限制码率防止带宽溢出
+        "-pix_fmt", "yuv420p",
+        "-g", "60",
+        
+        # 音频编码参数
         "-c:a", "aac", "-ar", "44100", "-b:a", "128k", 
+        
+        # 输出格式参数
         "-f", "flv", 
+        "-flvflags", "no_duration_filesize",
+        "-rw_timeout", "30000000", # 输出超时 30秒
+        
         rtmp_url
     ])
     
@@ -141,6 +155,8 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
                  suggestion = "\n💡 **修复建议**：检测到 401 认证错误。请尝试在 [🗂 Alist 管理] -> [🔐 设置 Token] 中填入您的 Alist Token。"
              elif "moov atom not found" in log_content:
                  suggestion = "\n💡 **提示**：'moov atom not found' 通常表示文件索引在末尾。已开启 Seek 模式，如果仍失败，请检查源文件是否支持 Range 请求。"
+             elif "I/O error" in log_content:
+                 suggestion = "\n💡 **提示**：检测到 I/O 错误。可能是推流地址有误、网络不通，或 Termux 的 SSL 证书问题。"
 
              await message.reply_text(
                  f"❌ **推流启动失败** (进程意外退出)\n\n"
