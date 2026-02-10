@@ -219,9 +219,14 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
 
     # 5. 执行 FFmpeg
     # 构建 Headers
-    headers_str = "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    # 必须确保每个 Header 后面都有 \r\n，否则 FFmpeg 会报错或警告
+    headers_list = [
+        "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ]
     if alist_token:
-        headers_str += f"\r\nAuthorization: {alist_token}"
+        headers_list.append(f"Authorization: {alist_token}")
+        
+    headers_str = "".join([h + "\r\n" for h in headers_list])
 
     cmd = [
         "ffmpeg", 
@@ -231,7 +236,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         "-reconnect_at_eof", "1",
         "-reconnect_streamed", "0",
         "-reconnect_on_network_error", "1",
-        "-reconnect_on_http_error", "4xx,5xx",
+        "-reconnect_on_http_error", "5xx", # 移除 4xx，遇到权限错误直接报错退出，方便排查
         "-reconnect_delay_max", "5",
         "-rw_timeout", "15000000",
         "-probesize", "50M", 
