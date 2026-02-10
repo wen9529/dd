@@ -51,7 +51,17 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     # 2. 获取 RTMP 地址
     config = load_config()
     server = config.get('rtmp_server', '')
-    key = config.get('stream_key', '')
+    
+    # --- 获取当前激活的密钥 ---
+    stream_keys = config.get('stream_keys', [])
+    active_index = config.get('active_key_index', 0)
+    current_key_name = "未命名"
+    key = ""
+    
+    if stream_keys and 0 <= active_index < len(stream_keys):
+        key = stream_keys[active_index]['key']
+        current_key_name = stream_keys[active_index]['name']
+    
     legacy_rtmp = config.get('rtmp', '')
     alist_token = config.get('alist_token', '')
     
@@ -64,7 +74,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         rtmp_url = legacy_rtmp
         
     if not rtmp_url:
-        await message.reply_text("❌ **未配置推流地址**\n请先在菜单中点击 [📺 推流设置] 进行配置，或联系管理员。", parse_mode='Markdown')
+        await message.reply_text("❌ **未配置推流地址**\n请先在菜单中点击 [📺 推流设置] -> [🔑 管理密钥] 进行配置。", parse_mode='Markdown')
         return
 
     # 3. 处理源链接
@@ -78,7 +88,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         src = f"http://127.0.0.1:5244{encoded_src}"
     
     # 4. 判断模式并发送反馈
-    display_rtmp = rtmp_url[:15] + "..." if len(rtmp_url) > 15 else rtmp_url
+    display_rtmp = rtmp_url[:25] + "..." if len(rtmp_url) > 25 else rtmp_url
     
     is_slideshow = isinstance(background_image, list) and len(background_image) > 0
     is_single_image = isinstance(background_image, str)
@@ -96,10 +106,14 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         mode_text = "🌐 网络流/Alist模式"
         img_info = "无"
     
+    # 显示使用的密钥名称
+    key_info = f"🔑 使用密钥: **{current_key_name}**" if key else "🔑 使用旧版完整链接"
+
     await message.reply_text(
         f"🚀 **启动推流任务** (极速模式)\n\n"
         f"📄 **源**: `{os.path.basename(src)}`\n"
         f"🖼 **图**: `{img_info}`\n"
+        f"{key_info}\n"
         f"📡 **目标**: `{display_rtmp}`\n"
         f"{mode_text}\n\n"
         "⏳ 正在启动进程...", 

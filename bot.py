@@ -12,7 +12,7 @@ from modules.config import load_config, save_config, is_owner, TOKEN, OWNER_ID
 from modules.utils import get_local_ip, get_all_ips, get_env_report, scan_local_videos, scan_local_audio, scan_local_images, format_size
 from modules.alist import get_alist_pid, fix_alist_config
 from modules.stream import run_ffmpeg_stream, stop_ffmpeg_process, get_stream_status, get_log_content
-from modules.keyboards import get_main_keyboard, get_alist_keyboard, get_stream_settings_keyboard, get_back_keyboard
+from modules.keyboards import get_main_keyboard, get_alist_keyboard, get_stream_settings_keyboard, get_back_keyboard, get_keys_management_keyboard
 
 # 配置日志
 logging.basicConfig(
@@ -292,33 +292,84 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "btn_stream_settings":
          config = load_config()
          server = config.get('rtmp_server') or "❌ 未设置"
-         key = config.get('stream_key') or "❌ 未设置"
          
-         display_key = key
-         if key != "❌ 未设置" and len(key) > 8:
-             display_key = key[:4] + "****" + key[-4:]
+         # 获取当前活跃的密钥名称
+         keys = config.get('stream_keys', [])
+         idx = config.get('active_key_index', 0)
+         current_key_name = "无"
+         if keys and 0 <= idx < len(keys):
+             current_key_name = keys[idx]['name']
 
          text = (
              "📺 **推流配置面板**\n\n"
              f"🔗 **服务器地址**: \n`{server}`\n\n"
-             f"🔑 **推流密钥**: \n`{display_key}`\n\n"
+             f"🔑 **当前使用密钥**: \n`{current_key_name}`\n\n"
              "👇 **修改配置**"
          )
          await query.edit_message_text(text, reply_markup=get_stream_settings_keyboard(), parse_mode='Markdown')
-         
+    
+    # --- 密钥管理 ---
+    elif data == "btn_manage_keys":
+        config = load_config()
+        keys = config.get('stream_keys', [])
+        idx = config.get('active_key_index', 0)
+        
+        text = "🔑 **密钥管理**\n\n请点击下方列表切换当前使用的密钥，或添加/删除。"
+        await query.edit_message_text(text, reply_markup=get_keys_management_keyboard(keys, idx, delete_mode=False), parse_mode='Markdown')
+
+    elif data == "btn_del_key_mode":
+        config = load_config()
+        keys = config.get('stream_keys', [])
+        text = "🗑️ **删除模式**\n\n点击下方按钮删除对应的密钥。"
+        await query.edit_message_text(text, reply_markup=get_keys_management_keyboard(keys, -1, delete_mode=True), parse_mode='Markdown')
+
+    elif data.startswith("select_key_"):
+        idx = int(data.split("_")[-1])
+        save_config({'active_key_index': idx})
+        
+        # 刷新列表显示选中状态
+        config = load_config()
+        keys = config.get('stream_keys', [])
+        await query.edit_message_reply_markup(reply_markup=get_keys_management_keyboard(keys, idx, delete_mode=False))
+
+    elif data.startswith("delete_key_"):
+        idx = int(data.split("_")[-1])
+        config = load_config()
+        keys = config.get('stream_keys', [])
+        
+        if 0 <= idx < len(keys):
+            del keys[idx]
+            # 修正 active_index，防止越界
+            active_index = config.get('active_key_index', 0)
+            if active_index >= idx and active_index > 0:
+                active_index -= 1
+            
+            save_config({'stream_keys': keys, 'active_key_index': active_index})
+            
+            # 刷新删除列表
+            await query.edit_message_reply_markup(reply_markup=get_keys_management_keyboard(keys, -1, delete_mode=True))
+        else:
+            await query.answer("❌ 删除失败", show_alert=True)
+
+    elif data == "btn_add_key":
+        context.user_data['state'] = 'waiting_key_name'
+        await query.edit_message_text(
+            "✍️ **添加新密钥 - 步骤 1/2**\n\n"
+            "请回复一个 **备注名称** (例如: Bilibili, YouTube, 斗鱼)\n\n"
+            "(回复 `cancel` 取消)",
+            parse_mode='Markdown'
+        )
+
     elif data == "btn_edit_server":
         context.user_data['state'] = 'waiting_server'
         await query.edit_message_text(
             "✍️ **请回复 RTMP 服务器地址**：\n\n例如：`rtmp://live-push.bilivideo.com/live-bvc/`\n\n(回复 `cancel` 取消)",
             parse_mode='Markdown'
         )
-        
+    
+    # 旧版修改密钥入口（暂时保留，功能重定向或移除，这里在菜单中移除了，保留逻辑防止出错）
     elif data == "btn_edit_key":
-        context.user_data['state'] = 'waiting_key'
-        await query.edit_message_text(
-            "✍️ **请回复 推流密钥**：\n\n例如：`?streamname=...`\n\n(回复 `cancel` 取消)",
-            parse_mode='Markdown'
-        )
+         await query.answer("请使用 [🔑 管理推流密钥] 功能", show_alert=True)
         
     elif data == "btn_view_log":
         log_content = get_log_content()
@@ -390,11 +441,33 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['state'] = None
         await update.message.reply_text("👇 下一步", reply_markup=get_stream_settings_keyboard())
         
-    elif state == 'waiting_key':
-        save_config({'stream_key': text})
-        await update.message.reply_text(f"✅ **推流密钥已更新！**", parse_mode='Markdown')
+    elif state == 'waiting_key_name':
+        context.user_data['temp_key_name'] = text
+        context.user_data['state'] = 'waiting_key_value'
+        await update.message.reply_text(
+            f"✍️ **添加新密钥 - 步骤 2/2**\n\n"
+            f"名称: `{text}`\n"
+            f"请回复该平台的 **推流密钥** (Stream Key)：\n\n"
+            "(回复 `cancel` 取消)",
+            parse_mode='Markdown'
+        )
+    
+    elif state == 'waiting_key_value':
+        name = context.user_data.get('temp_key_name', '未命名')
+        key_val = text
+        
+        config = load_config()
+        keys = config.get('stream_keys', [])
+        keys.append({'name': name, 'key': key_val})
+        
+        # 默认选中新添加的
+        save_config({'stream_keys': keys, 'active_key_index': len(keys) - 1})
+        
+        await update.message.reply_text(f"✅ **已添加并选中密钥**: {name}", parse_mode='Markdown')
         context.user_data['state'] = None
-        await update.message.reply_text("👇 配置完成", reply_markup=get_stream_settings_keyboard())
+        
+        # 返回管理界面
+        await update.message.reply_text("👇 密钥管理", reply_markup=get_keys_management_keyboard(keys, len(keys)-1))
 
 
 # --- 命令处理 ---

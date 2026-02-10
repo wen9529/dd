@@ -19,10 +19,41 @@ def get_alist_keyboard(is_running):
 
 def get_stream_settings_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 修改推流地址", callback_data="btn_edit_server"), InlineKeyboardButton("🔑 修改推流密钥", callback_data="btn_edit_key")],
+        [InlineKeyboardButton("📝 修改推流地址", callback_data="btn_edit_server")],
+        [InlineKeyboardButton("🔑 管理推流密钥", callback_data="btn_manage_keys")],
         [InlineKeyboardButton("📜 查看推流日志", callback_data="btn_view_log")],
         [InlineKeyboardButton("🔙 返回主菜单", callback_data="btn_back_main")]
     ])
+
+def get_keys_management_keyboard(keys, active_index, delete_mode=False):
+    keyboard = []
+    
+    # 列表显示密钥
+    for idx, key_data in enumerate(keys):
+        name = key_data.get('name', '未命名')
+        if delete_mode:
+            # 删除模式
+            btn_text = f"🗑️ {name}"
+            callback = f"delete_key_{idx}"
+        else:
+            # 选择模式
+            status = "✅" if idx == active_index else "⚪"
+            btn_text = f"{status} {name}"
+            callback = f"select_key_{idx}"
+        
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data=callback)])
+
+    # 操作栏
+    if not delete_mode:
+        keyboard.append([
+            InlineKeyboardButton("➕ 添加密钥", callback_data="btn_add_key"),
+            InlineKeyboardButton("🗑️ 删除密钥", callback_data="btn_del_key_mode")
+        ])
+    else:
+        keyboard.append([InlineKeyboardButton("🔙 退出删除模式", callback_data="btn_manage_keys")])
+
+    keyboard.append([InlineKeyboardButton("🔙 返回设置", callback_data="btn_stream_settings")])
+    return InlineKeyboardMarkup(keyboard)
 
 def get_back_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="btn_back_main")]])

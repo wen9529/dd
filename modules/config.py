@@ -28,6 +28,8 @@ def is_owner(user_id):
 def load_config():
     """加载配置文件"""
     config = {}
+    save_needed = False
+    
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
@@ -35,12 +37,38 @@ def load_config():
         except Exception as e:
             logger.error(f"加载配置失败: {e}")
     
+    # --- 迁移逻辑：单一密钥 -> 多密钥列表 ---
+    if 'stream_key' in config and 'stream_keys' not in config:
+        old_key = config.get('stream_key')
+        if old_key and old_key != "❌ 未设置":
+            config['stream_keys'] = [{'name': '默认密钥', 'key': old_key}]
+            config['active_key_index'] = 0
+            logger.info("已将旧密钥迁移到多密钥列表")
+            save_needed = True
+        # 删除旧字段，避免混淆（可选，这里保留 clean）
+        # del config['stream_key'] 
+
+    # 确保基本结构存在
+    if 'stream_keys' not in config:
+        config['stream_keys'] = []
+    if 'active_key_index' not in config:
+        config['active_key_index'] = 0
+
+    if save_needed:
+        try:
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=4)
+        except:
+            pass
+
     return {
         'token': config.get('token', TOKEN),
         'owner_id': config.get('owner_id', OWNER_ID),
         'rtmp': config.get('rtmp', None),
         'rtmp_server': config.get('rtmp_server', ''),
-        'stream_key': config.get('stream_key', ''),
+        # 返回多密钥结构
+        'stream_keys': config.get('stream_keys', []),
+        'active_key_index': config.get('active_key_index', 0),
         'alist_token': config.get('alist_token', '')
     }
 
