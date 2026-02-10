@@ -83,7 +83,8 @@ async def alist_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         # 运行 alist admin 获取信息
         result = subprocess.check_output(["alist", "admin"], text=True)
-        await update.message.reply_text(f"🔐 **Alist 管理员信息**:\n\n`{result.strip()}`", parse_mode='Markdown')
+        # 简单的 markdown 格式化
+        await update.message.reply_text(f"🔐 **Alist 管理员信息**:\n\n```\n{result.strip()}\n```", parse_mode='Markdown')
     except Exception as e:
         await update.message.reply_text(f"❌ 获取失败: {e}")
 
@@ -95,7 +96,7 @@ async def alist_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_stream(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     启动推流
-    用法: /stream <视频链接> <RTMP推流地址>
+    用法: /stream <视频链接/路径> <RTMP推流地址>
     """
     if not is_owner(update.effective_user.id): return
     
@@ -104,8 +105,9 @@ async def start_stream(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if len(args) < 2:
         await update.message.reply_text(
-            "⚠️ **参数错误**\n\n用法:\n`/stream <视频链接> <RTMP地址>`\n\n"
-            "示例:\n`/stream http://127.0.0.1:5244/d/movie.mp4 rtmp://live-push.telegram.org/type/key`",
+            "⚠️ **参数错误**\n\n"
+            "用法 1 (完整链接):\n`/stream http://.../movie.mp4 rtmp://...`\n\n"
+            "用法 2 (Alist 路径):\n`/stream /d/电影/test.mp4 rtmp://...`",
             parse_mode='Markdown'
         )
         return
@@ -114,22 +116,24 @@ async def start_stream(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ 当前已有推流正在进行，请先发送 /stopstream 停止。")
         return
 
-    video_url = args[0]
+    video_input = args[0]
     rtmp_url = args[1]
 
-    await update.message.reply_text(f"🚀 **准备推流**...\n\n源: `{video_url}`\n目标: Telegram Live", parse_mode='Markdown')
+    # 智能处理 Alist 相对路径
+    if video_input.startswith("/"):
+        if not get_alist_pid():
+            await update.message.reply_text("⚠️ 检测到使用了 Alist 路径，但 Alist 服务未运行。\n请先使用 /alist_start 启动。")
+            return
+        video_input = f"http://127.0.0.1:5244{video_input}"
+        await update.message.reply_text(f"🔗 已转换为本地 Alist 链接:\n`{video_input}`", parse_mode='Markdown')
+
+    await update.message.reply_text(f"🚀 **准备推流**...\n\n源: `{video_input}`\n目标: Telegram Live", parse_mode='Markdown')
 
     # 构建 FFmpeg 命令
-    # -re : 按本地帧率读取 (模拟直播)
-    # -i : 输入
-    # -c:v libx264 : 视频编码 (使用软解兼容性好)
-    # -preset veryfast : 编码速度优先，减少延迟
-    # -c:a aac : 音频编码
-    # -f flv : 输出格式必须为 flv 才能推送到 RTMP
     command = [
         "ffmpeg",
         "-re",
-        "-i", video_url,
+        "-i", video_input,
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-maxrate", "3000k",
@@ -179,9 +183,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             f"👑 **Termux 全能机器人**\n\n"
             f"🛠 **Alist 管理**:\n"
-            f"/alist - 查看 Alist 面板\n\n"
+            f"/alist - 打开管理面板\n"
+            f"/alist_start - 启动 Alist\n\n"
             f"📺 **直播推流**:\n"
-            f"/stream - 开始推流\n"
+            f"/stream <路径> <RTMP> - 开始推流\n"
             f"/stopstream - 停止推流\n\n"
             f"你的 ID: `{user_id}`"
         )

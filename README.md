@@ -1,53 +1,42 @@
-# Termux Telegram Bot (Alist + FFmpeg)
+# Termux Telegram Bot (Alist + FFmpeg + AutoUpdate)
 
-这是一个 Termux 上的多功能机器人，集成了 **Alist 网盘管理** 和 **Telegram 直播推流** 功能。
+这是一个 Termux 上的多功能机器人，集成了 **Alist 网盘管理**、**直播推流** 以及 **全自动更新** 功能。
 
 ## 🚀 核心功能
 
-1.  **Alist 管理**:
-    *   一键查看运行状态
-    *   Bot 指令启动/停止服务
-    *   直接获取 Admin 密码
-2.  **直播推流**:
-    *   使用 `ffmpeg` 将 Alist 中的视频文件（直链）推送到 Telegram 视频直播间。
-    *   支持后台运行，随时停止。
-3.  **进程守护**: 使用 PM2 自动管理，崩溃自启。
+1.  **🤖 全自动更新**: 
+    *   内置 `termux-updater` 守护进程。
+    *   **每分钟** 自动检查 Git 仓库。
+    *   发现更新后自动拉取，并智能重启机器人，同时保留你的 Token 配置。
+2.  **🗂 Alist 管理**: 一键查看状态、启动停止、获取密码。
+3.  **📺 直播推流**: 支持使用 Alist 路径直接推流到 Telegram。
+4.  **🛡 进程守护**: 使用 PM2 双进程管理（Bot + Updater）。
 
-## 📥 安装与更新
+## 📥 安装与启动
 
-在 Termux 中执行：
+在 Termux 中执行一次即可：
 
 ```bash
 bash setup.sh
 ```
 
-脚本会自动安装 `python`, `ffmpeg`, `alist`, `pm2` 等所有环境。
+**脚本将会启动两个后台进程：**
+1.  `termux-bot`: 你的 Telegram 机器人核心。
+2.  `termux-updater`: 自动更新检查器。
 
 ## 🎮 使用指南
 
-### 1. Alist 管理
-发送 `/alist` 获取菜单。
-*   **启动**: `/alist_start`
-*   **获取密码**: `/alist_admin` (用于登录网页后台挂载网盘)
-*   *注意: Alist 默认端口为 5244*
+### 基础命令
+*   `/start` - 查看主菜单和 ID。
+*   `/alist` - 打开 Alist 管理面板。
+*   `/stream <路径> <RTMP地址>` - 开始推流。
 
-### 2. 推流到 Telegram 直播
-1.  **准备视频链接**: 从你的 Alist 复制视频的直链 (例如: `http://192.168.1.5:5244/d/电影/test.mp4`).
-2.  **获取推流地址**: 
-    *   在 Telegram 群组/频道开启“视频聊天(Video Chat)”或“直播(Live Stream)”。
-    *   点击“使用其他应用推流(Stream with...)”。
-    *   复制 **服务器地址 (Server URL)** 和 **推流密钥 (Stream Key)**。
-    *   将它们拼接在一起：`服务器地址/推流密钥` (注意中间可能有斜杠，通常 TG 链接类似 `rtmps://...:443/s/KEY`).
-3.  **发送指令**:
-    ```text
-    /stream <视频链接> <RTMP完整地址>
-    ```
-4.  **停止推流**:
-    ```text
-    /stopstream
-    ```
+### 进程管理 (PM2)
+*   **查看状态**: `pm2 list`
+*   **查看机器人日志**: `pm2 log termux-bot`
+*   **查看更新日志**: `pm2 log termux-updater` (可以看到是否有新版本被检测到)
+*   **停止所有**: `pm2 stop all`
 
 ## ⚠️ 注意事项
-*   推流十分消耗手机电量和 CPU，建议连接电源使用。
-*   请确保网络环境良好，否则直播可能会卡顿。
-*   Token 和 Owner ID 仍然硬编码在 `bot.py` 中，请注意保护。
+*   **Token 保护**: 自动更新脚本使用了 `git stash` 技术，这意味着如果你修改了 `bot.py` 里的 Token，更新时会自动暂存并恢复，**不会被覆盖**。
+*   **冲突处理**: 如果官方更新了 `bot.py` 的结构，而你也修改了大量代码，可能会产生冲突。此时建议查看 `pm2 log termux-updater` 排查。
