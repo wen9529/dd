@@ -231,7 +231,8 @@ def get_alist_keyboard(is_running):
     start_stop_btn = InlineKeyboardButton("🔴 停止服务", callback_data="btn_alist_stop") if is_running else InlineKeyboardButton("🟢 启动服务", callback_data="btn_alist_start")
     return InlineKeyboardMarkup([
         [start_stop_btn],
-        [InlineKeyboardButton("ℹ️ 访问地址", callback_data="btn_alist_info"), InlineKeyboardButton("🔑 管理密码", callback_data="btn_alist_admin")],
+        [InlineKeyboardButton("ℹ️ 访问地址", callback_data="btn_alist_info"), InlineKeyboardButton("🔑 查看密码", callback_data="btn_alist_admin")],
+        [InlineKeyboardButton("📝 重置密码", callback_data="btn_alist_set_pwd"), InlineKeyboardButton("🔧 修复局域网", callback_data="btn_alist_fix")],
         [InlineKeyboardButton("🔙 返回主菜单", callback_data="btn_back_main")]
     ])
 
@@ -309,6 +310,74 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             await context.bot.send_message(chat_id=user_id, text="❌ 获取失败")
             
+    elif data == "btn_alist_set_pwd":
+        context.user_data['state'] = 'waiting_alist_pwd'
+        await query.edit_message_text(
+            "✍️ **请回复新的 Alist 密码**：\n\n(回复 `cancel` 取消)",
+            parse_mode='Markdown'
+        )
+    
+    # --- 修复 Alist 访问 ---
+    elif data == "btn_alist_fix":
+        # 停止 Alist
+        pid = get_alist_pid()
+        if pid:
+            os.kill(pid, signal.SIGTERM)
+            await asyncio.sleep(1)
+        
+        # 查找配置
+        fixed_count = 0
+        log_msg = "🛠 **执行修复操作...**\n"
+        search_paths = [
+            os.path.join(os.getcwd(), "data", "config.json"),
+            os.path.expanduser("~/.alist/data/config.json")
+        ]
+        
+        for p in search_paths:
+            if os.path.exists(p):
+                try:
+                    with open(p, 'r') as f:
+                        config_data = json.load(f)
+                    
+                    changed = False
+                    # V3 格式
+                    if 'scheme' in config_data and isinstance(config_data['scheme'], dict):
+                        if config_data['scheme'].get('address') != '0.0.0.0':
+                            config_data['scheme']['address'] = '0.0.0.0'
+                            changed = True
+                    # 旧格式或 Root 层级
+                    elif 'address' in config_data:
+                        if config_data.get('address') != '0.0.0.0':
+                            config_data['address'] = '0.0.0.0'
+                            changed = True
+                    
+                    if changed:
+                        with open(p, 'w') as f:
+                            json.dump(config_data, f, indent=4)
+                        fixed_count += 1
+                        log_msg += f"✅ 已修复配置文件: `{p}`\n"
+                    else:
+                        log_msg += f"👌 配置无需修改: `{p}`\n"
+                        
+                except Exception as e:
+                    log_msg += f"❌ 读取配置文件失败: {str(e)}\n"
+        
+        if fixed_count == 0 and "✅" not in log_msg and "👌" not in log_msg:
+             log_msg += "⚠️ 未找到配置文件，请先启动一次 Alist 以生成配置。\n"
+
+        # 重启
+        subprocess.Popen(["alist", "server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        await asyncio.sleep(2)
+        
+        new_pid = get_alist_pid()
+        status = "✅ 重启成功" if new_pid else "❌ 重启失败"
+        
+        await query.edit_message_text(
+            f"🔧 **修复结果报告**\n\n{log_msg}\n状态: {status}\n\n👉 现在尝试通过局域网访问吧。",
+            reply_markup=get_alist_keyboard(bool(new_pid)),
+            parse_mode='Markdown'
+        )
+            
     # --- 新增推流设置逻辑 ---
     elif data == "btn_stream_settings":
          config = load_config()
@@ -367,6 +436,21 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 清除状态，开始推流
         context.user_data['state'] = None
         await run_ffmpeg_stream(update, text)
+        
+    elif state == 'waiting_alist_pwd':
+        try:
+            process = subprocess.Popen(["alist", "admin", "set", text], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout, stderr = process.communicate()
+            
+            result_msg = f"✅ **密码已重置**\n\n用户: `admin`\n密码: `{text}`\n\n{stdout}"
+            await update.message.reply_text(result_msg, parse_mode='Markdown')
+        except Exception as e:
+             await update.message.reply_text(f"❌ 设置失败: {e}")
+        
+        context.user_data['state'] = None
+        # 返回 Alist 菜单
+        pid = get_alist_pid()
+        await update.message.reply_text("👇 Alist 管理", reply_markup=get_alist_keyboard(bool(pid)))
 
     elif state == 'waiting_server':
         if not text.startswith("rtmp"):
