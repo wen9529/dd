@@ -39,7 +39,6 @@ def is_owner(user_id):
     is_match = uid_str == owner_str
     
     if is_match:
-        # print(f"✅ [权限通过] 用户 {uid_str} 正在操作")
         pass
     else:
         print(f"❌ [权限拒绝] 用户 {uid_str} 尝试操作，但管理员ID设定为 {owner_str}")
@@ -63,7 +62,8 @@ def load_config():
         'owner_id': config.get('owner_id', OWNER_ID),
         'rtmp': config.get('rtmp', None), # 兼容旧配置
         'rtmp_server': config.get('rtmp_server', ''),
-        'stream_key': config.get('stream_key', '')
+        'stream_key': config.get('stream_key', ''),
+        'alist_token': config.get('alist_token', '') # 新增 Alist Token
     }
 
 def save_config(config_update):
@@ -184,6 +184,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     server = config.get('rtmp_server', '')
     key = config.get('stream_key', '')
     legacy_rtmp = config.get('rtmp', '')
+    alist_token = config.get('alist_token', '')
     
     rtmp_url = ""
     if custom_rtmp:
@@ -217,17 +218,27 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     )
 
     # 5. 执行 FFmpeg
-    # 修复：移除 -reconnect_streamed 1 以允许 FFmpeg 针对 MP4 进行 seek 操作 (解决 moov atom not found)
-    # 优化：添加 User-Agent 伪装
-    # 优化：添加 probesize 和 analyzeduration 增加识别成功率
+    # 构建 Headers
+    headers_str = "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    if alist_token:
+        headers_str += f"\r\nAuthorization: {alist_token}"
+
     cmd = [
         "ffmpeg", 
-        "-re", 
-        "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "-reconnect", "1", "-reconnect_delay_max", "5",
-        "-probesize", "10M", "-analyzeduration", "10M",
+        "-y",
+        "-headers", headers_str,
+        "-reconnect", "1", 
+        "-reconnect_at_eof", "1",
+        "-reconnect_streamed", "0",
+        "-reconnect_on_network_error", "1",
+        "-reconnect_on_http_error", "4xx,5xx",
+        "-reconnect_delay_max", "5",
+        "-rw_timeout", "15000000",
+        "-probesize", "50M", 
+        "-analyzeduration", "50M",
+        "-re",
         "-i", src, 
-        "-c:v", "libx264", "-preset", "ultrafast", "-g", "60",
+        "-c:v", "libx264", "-preset", "veryfast", "-g", "60",
         "-c:a", "aac", "-ar", "44100", "-b:a", "128k", 
         "-f", "flv", 
         rtmp_url
@@ -250,16 +261,22 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
              log_content = "无日志记录"
              try:
                  with open(FFMPEG_LOG_FILE, "r") as f:
-                     # 读取最后 800 个字符
-                     log_content = f.read()[-800:]
+                     # 读取最后 1000 个字符
+                     log_content = f.read()[-1000:]
              except Exception as e:
                  log_content = f"读取日志失败: {e}"
+
+             suggestion = ""
+             if "401 Unauthorized" in log_content:
+                 suggestion = "\n💡 **修复建议**：检测到 401 认证错误。请尝试在 [🗂 Alist 管理] -> [🔐 设置 Token] 中填入您的 Alist Token。"
+             elif "moov atom not found" in log_content:
+                 suggestion = "\n💡 **提示**：'moov atom not found' 通常表示文件索引在末尾。已开启 Seek 模式，如果仍失败，请检查源文件是否支持 Range 请求。"
 
              await update.message.reply_text(
                  f"❌ **推流启动失败** (进程意外退出)\n\n"
                  f"🔍 **错误详情 (最后日志)**:\n"
-                 f"```\n{log_content}\n```\n"
-                 f"请检查源链接是否有效，或 RTMP 地址是否正确。", 
+                 f"```\n{log_content}\n```"
+                 f"{suggestion}", 
                  parse_mode='Markdown'
              )
              ffmpeg_process = None
@@ -293,9 +310,9 @@ def get_alist_keyboard(is_running):
     start_stop_btn = InlineKeyboardButton("🔴 停止服务", callback_data="btn_alist_stop") if is_running else InlineKeyboardButton("🟢 启动服务", callback_data="btn_alist_start")
     return InlineKeyboardMarkup([
         [start_stop_btn],
-        [InlineKeyboardButton("ℹ️ 访问地址", callback_data="btn_alist_info"), InlineKeyboardButton("🔑 查看密码", callback_data="btn_alist_admin")],
-        [InlineKeyboardButton("📝 重置密码", callback_data="btn_alist_set_pwd"), InlineKeyboardButton("🔧 修复局域网", callback_data="btn_alist_fix")],
-        [InlineKeyboardButton("🔙 返回主菜单", callback_data="btn_back_main")]
+        [InlineKeyboardButton("ℹ️ 访问地址", callback_data="btn_alist_info"), InlineKeyboardButton("🔐 设置 Token", callback_data="btn_alist_token")],
+        [InlineKeyboardButton("🔑 查看账号", callback_data="btn_alist_admin"), InlineKeyboardButton("📝 重置密码", callback_data="btn_alist_set_pwd")],
+        [InlineKeyboardButton("🔧 修复局域网", callback_data="btn_alist_fix"), InlineKeyboardButton("🔙 返回主菜单", callback_data="btn_back_main")]
     ])
 
 def get_stream_settings_keyboard():
@@ -381,6 +398,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['state'] = 'waiting_alist_pwd'
         await query.edit_message_text(
             "✍️ **请回复新的 Alist 密码**：\n\n(回复 `cancel` 取消)",
+            parse_mode='Markdown'
+        )
+
+    elif data == "btn_alist_token":
+        context.user_data['state'] = 'waiting_alist_token'
+        await query.edit_message_text(
+            "🔐 **配置 Alist Token**\n\n"
+            "为了访问私有文件，请填入 Alist 的 Token。\n"
+            "获取方式：Alist 网页版 -> 管理 -> 设置 -> 其他 -> Token\n\n"
+            "请直接回复 Token (回复 `cancel` 取消)",
             parse_mode='Markdown'
         )
     
@@ -559,6 +586,13 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         context.user_data['state'] = None
         # 返回 Alist 菜单
+        pid = get_alist_pid()
+        await update.message.reply_text("👇 Alist 管理", reply_markup=get_alist_keyboard(bool(pid)))
+    
+    elif state == 'waiting_alist_token':
+        save_config({'alist_token': text})
+        await update.message.reply_text(f"✅ **Alist Token 已保存！**\n推流时将自动携带此凭证。", parse_mode='Markdown')
+        context.user_data['state'] = None
         pid = get_alist_pid()
         await update.message.reply_text("👇 Alist 管理", reply_markup=get_alist_keyboard(bool(pid)))
 
