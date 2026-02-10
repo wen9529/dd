@@ -35,9 +35,12 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     """执行推流逻辑"""
     global ffmpeg_process
     
+    # 使用 effective_message 以兼容 CommandHandler (update.message) 和 CallbackQueryHandler (update.callback_query.message)
+    message = update.effective_message
+
     # 1. 检查是否已有任务
     if get_stream_status():
-        await update.message.reply_text("⚠️ **推流正在进行中**\n请先使用 `/stopstream` 停止当前任务，或等待其结束。", parse_mode='Markdown')
+        await message.reply_text("⚠️ **推流正在进行中**\n请先使用 `/stopstream` 停止当前任务，或等待其结束。", parse_mode='Markdown')
         return
 
     # 2. 获取 RTMP 地址
@@ -56,7 +59,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         rtmp_url = legacy_rtmp
         
     if not rtmp_url:
-        await update.message.reply_text("❌ **未配置推流地址**\n请先在菜单中点击 [📺 推流设置] 进行配置，或联系管理员。", parse_mode='Markdown')
+        await message.reply_text("❌ **未配置推流地址**\n请先在菜单中点击 [📺 推流设置] 进行配置，或联系管理员。", parse_mode='Markdown')
         return
 
     # 3. 处理源链接
@@ -71,7 +74,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     
     # 4. 发送反馈
     display_rtmp = rtmp_url[:15] + "..." if len(rtmp_url) > 15 else rtmp_url
-    await update.message.reply_text(
+    await message.reply_text(
         f"🚀 **启动推流任务**\n\n"
         f"📄 **源**: `{raw_src}`\n"
         f"📡 **目标**: `{display_rtmp}`\n"
@@ -139,7 +142,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
              elif "moov atom not found" in log_content:
                  suggestion = "\n💡 **提示**：'moov atom not found' 通常表示文件索引在末尾。已开启 Seek 模式，如果仍失败，请检查源文件是否支持 Range 请求。"
 
-             await update.message.reply_text(
+             await message.reply_text(
                  f"❌ **推流启动失败** (进程意外退出)\n\n"
                  f"🔍 **错误详情 (最后日志)**:\n"
                  f"```\n{log_content}\n```"
@@ -152,7 +155,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
                  [InlineKeyboardButton("📜 查看实时日志", callback_data="btn_view_log")],
                  [InlineKeyboardButton("🛑 停止推流", callback_data="btn_stop_stream_quick")]
              ])
-             await update.message.reply_text(
+             await message.reply_text(
                  f"✅ **推流已稳定运行**\n"
                  f"PID: {ffmpeg_process.pid}\n\n"
                  f"如果画面仍未显示，请点击下方 [查看实时日志] 排查问题。",
@@ -161,4 +164,4 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
              )
              
     except Exception as e:
-        await update.message.reply_text(f"❌ 启动异常: {e}")
+        await message.reply_text(f"❌ 启动异常: {e}")
