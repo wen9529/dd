@@ -4,28 +4,41 @@ import subprocess
 import os
 import signal
 import psutil
+import sys
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 
-# --- 硬编码配置区域 ---
-# ⚠️ 请将下方的 OWNER_ID 修改为您在 Telegram 中获取到的 ID
-TOKEN = "7565918204:AAH3E3Bb9Op7Xv-kezL6GISeJj8mA6Ycwug"
+# --- ⚠️ 核心配置区域 ⚠️ ---
+# 您执行了 reset，配置可能已丢失。
+# 请在此处填入您的 Token 和 ID，或者在 Web 界面/本地编辑器修改。
+TOKEN = "7565918204:AAH3E3Bb9Op7Xv-kezL6GISeJj8mA6Ycwug" 
 OWNER_ID = 1878794912
-# --------------------
+# -------------------------
 
 # 全局变量用于存储 FFmpeg 进程
 ffmpeg_process = None
 
-# 配置日志
+# 配置日志 - 输出到标准输出以便 pm2 log 查看
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    stream=sys.stdout
 )
 logger = logging.getLogger(__name__)
 
 def is_owner(user_id):
-    # 强制转换为字符串比较，防止类型错误
-    return str(user_id).strip() == str(OWNER_ID).strip()
+    """检查用户是否为管理员，并打印调试日志"""
+    uid_str = str(user_id).strip()
+    owner_str = str(OWNER_ID).strip()
+    
+    is_match = uid_str == owner_str
+    
+    if is_match:
+        print(f"✅ [权限通过] 用户 {uid_str} 正在操作")
+    else:
+        print(f"❌ [权限拒绝] 用户 {uid_str} 尝试操作，但管理员ID设定为 {owner_str}")
+        
+    return is_match
 
 # --- 辅助功能 ---
 def check_program(cmd):
@@ -33,7 +46,7 @@ def check_program(cmd):
     try:
         if cmd == "ffmpeg":
             output = subprocess.check_output(["ffmpeg", "-version"], stderr=subprocess.STDOUT, text=True)
-            return output.splitlines()[0].split()[2] # 获取版本号
+            return output.splitlines()[0].split()[2] 
         elif cmd == "alist":
             output = subprocess.check_output(["alist", "version"], stderr=subprocess.STDOUT, text=True)
             for line in output.splitlines():
@@ -46,20 +59,20 @@ def check_program(cmd):
 def get_alist_pid():
     """查找 alist 进程 PID"""
     for proc in psutil.process_iter(['pid', 'name']):
-        if 'alist' in proc.info['name']:
-            return proc.info['pid']
+        try:
+            if 'alist' in proc.info['name']:
+                return proc.info['pid']
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
     return None
 
 def get_env_report():
     """生成环境报告文本"""
     ffmpeg_ver = check_program("ffmpeg")
     alist_ver = check_program("alist")
-    
-    # 检查进程
     alist_pid = get_alist_pid()
     ffmpeg_running = ffmpeg_process is not None and ffmpeg_process.poll() is None
     
-    # 系统资源
     cpu_usage = psutil.cpu_percent(interval=None)
     mem_info = psutil.virtual_memory()
     mem_usage = f"{mem_info.used / 1024 / 1024:.0f}MB / {mem_info.total / 1024 / 1024:.0f}MB"
@@ -77,7 +90,7 @@ def get_env_report():
         f"• 内存: {mem_usage}"
     )
 
-# --- 键盘菜单定义 ---
+# --- 键盘菜单 ---
 def get_main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🗂 Alist 管理", callback_data="btn_alist"), InlineKeyboardButton("📺 推流说明", callback_data="btn_stream_help")],
@@ -96,212 +109,126 @@ def get_alist_keyboard(is_running):
 def get_back_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="btn_back_main")]])
 
-# --- 按钮回调处理 ---
+# --- 回调处理 ---
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     
     if not is_owner(user_id):
-        await query.answer(f"❌ 权限拒绝\n你的ID: {user_id}\n管理员ID: {OWNER_ID}", show_alert=True)
+        await query.answer("❌ 无权操作，请检查 bot.py 配置", show_alert=True)
         return
 
-    await query.answer() # 停止加载动画
+    await query.answer()
     data = query.data
 
     if data == "btn_refresh" or data == "btn_back_main":
         await query.edit_message_text(
-            f"👑 **Termux 控制台**\n当前用户: `{user_id}`\n请点击下方按钮进行管理：",
+            f"👑 **Termux 控制台**\n当前用户: `{user_id}`\n",
             reply_markup=get_main_keyboard(),
             parse_mode='Markdown'
         )
-
     elif data == "btn_env":
-        report = get_env_report()
-        await query.edit_message_text(report, reply_markup=get_back_keyboard(), parse_mode='Markdown')
-
-    elif data == "btn_stream_help":
-        msg = (
-            "📺 **推流功能说明**\n\n"
-            "目前仅支持通过命令操作：\n"
-            "1. `/stream <文件> <RTMP地址>` - 开始推流\n"
-            "2. `/stopstream` - 停止推流\n\n"
-            "✨ **提示**: 文件路径如果以 `/` 开头，会自动补全为本地 Alist 地址。"
-        )
-        await query.edit_message_text(msg, reply_markup=get_back_keyboard(), parse_mode='Markdown')
-
+        await query.edit_message_text(get_env_report(), reply_markup=get_back_keyboard(), parse_mode='Markdown')
     elif data == "btn_alist":
         pid = get_alist_pid()
-        status_text = f"✅ Alist 正在运行 (PID: {pid})" if pid else "🔴 Alist 已停止"
-        await query.edit_message_text(
-            f"🗂 **Alist 管理面板**\n\n状态: {status_text}",
-            reply_markup=get_alist_keyboard(bool(pid)),
-            parse_mode='Markdown'
-        )
-
+        status_text = f"✅ 运行中 (PID: {pid})" if pid else "🔴 已停止"
+        await query.edit_message_text(f"🗂 **Alist 面板**\n状态: {status_text}", reply_markup=get_alist_keyboard(bool(pid)), parse_mode='Markdown')
     elif data == "btn_alist_start":
         if not get_alist_pid():
              subprocess.Popen(["alist", "server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-             await asyncio.sleep(2) # 等待启动
-        
+             await asyncio.sleep(2)
         pid = get_alist_pid()
-        status_text = f"✅ Alist 正在运行 (PID: {pid})" if pid else "❌ 启动失败或超时"
-        await query.edit_message_text(
-            f"🗂 **Alist 管理面板**\n\n状态: {status_text}",
-            reply_markup=get_alist_keyboard(bool(pid)),
-            parse_mode='Markdown'
-        )
-
+        await query.edit_message_text(f"🗂 **Alist 面板**\n状态: {'✅ 运行中' if pid else '❌ 启动失败'}", reply_markup=get_alist_keyboard(bool(pid)), parse_mode='Markdown')
     elif data == "btn_alist_stop":
         pid = get_alist_pid()
         if pid:
             os.kill(pid, signal.SIGTERM)
             await asyncio.sleep(1)
-        
         pid = get_alist_pid()
-        status_text = f"✅ Alist 正在运行 (PID: {pid})" if pid else "🔴 Alist 已停止"
-        await query.edit_message_text(
-             f"🗂 **Alist 管理面板**\n\n状态: {status_text}",
-            reply_markup=get_alist_keyboard(bool(pid)),
-            parse_mode='Markdown'
-        )
-
+        await query.edit_message_text(f"🗂 **Alist 面板**\n状态: {'✅ 运行中' if pid else '🔴 已停止'}", reply_markup=get_alist_keyboard(bool(pid)), parse_mode='Markdown')
     elif data == "btn_alist_info":
-        await context.bot.send_message(chat_id=user_id, text="🌐 **访问地址**:\n\n本地: `http://127.0.0.1:5244`\n(确保设备在同一局域网)", parse_mode='Markdown')
-        
+        await context.bot.send_message(chat_id=user_id, text="🌐 地址: `http://127.0.0.1:5244`", parse_mode='Markdown')
     elif data == "btn_alist_admin":
         try:
-            result = subprocess.check_output(["alist", "admin"], text=True)
-            await context.bot.send_message(chat_id=user_id, text=f"🔐 **管理员信息**:\n```\n{result.strip()}\n```", parse_mode='Markdown')
+            res = subprocess.check_output(["alist", "admin"], text=True).strip()
+            await context.bot.send_message(chat_id=user_id, text=f"🔐 信息:\n`{res}`", parse_mode='Markdown')
         except:
-             await context.bot.send_message(chat_id=user_id, text="❌ 获取密码失败", parse_mode='Markdown')
-
+            await context.bot.send_message(chat_id=user_id, text="❌ 获取失败")
+    elif data == "btn_stream_help":
+         await query.edit_message_text("用法: `/stream <路径> <RTMP>`", reply_markup=get_back_keyboard(), parse_mode='Markdown')
     elif data == "btn_update":
-        await query.edit_message_text("♻️ 正在连接 Git 仓库检查更新...", parse_mode='Markdown')
-        try:
-            # 1. 检查更新
-            subprocess.run("git fetch", shell=True, check=True)
-            local_hash = subprocess.check_output("git rev-parse HEAD", shell=True, text=True).strip()
-            remote_hash = subprocess.check_output("git rev-parse @{u}", shell=True, text=True).strip()
-            
-            if local_hash != remote_hash:
-                await context.bot.send_message(chat_id=user_id, text="🚀 **发现新版本！**\n\n正在拉取代码并重启机器人，请稍候...", parse_mode='Markdown')
-                # 触发更新脚本，setup.sh 会重启 bot，所以这里 bot 进程会结束
-                subprocess.Popen("git pull && bash setup.sh", shell=True)
-            else:
-                commit_id = local_hash[:7]
-                await query.edit_message_text(f"✅ **当前已是最新版本**\n\nCommit: `{commit_id}`\n\n后台自动更新进程(PM2) 也会每分钟自动检查。", reply_markup=get_back_keyboard(), parse_mode='Markdown')
-        except Exception as e:
-            await query.edit_message_text(f"❌ 检查更新失败:\n{str(e)}", reply_markup=get_back_keyboard(), parse_mode='Markdown')
+         await query.edit_message_text("♻️ 正在检查更新...", parse_mode='Markdown')
+         subprocess.Popen("git pull && bash setup.sh", shell=True)
 
 
 # --- 命令处理 ---
-async def check_env(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """(命令) 检查服务器环境"""
-    if not is_owner(update.effective_user.id): return
-    await update.message.reply_text(get_env_report(), parse_mode='Markdown')
-
-async def alist_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """(命令) 显示 Alist 管理菜单"""
-    if not is_owner(update.effective_user.id): return
-    
-    pid = get_alist_pid()
-    status_text = f"✅ Alist 正在运行 (PID: {pid})" if pid else "🔴 Alist 已停止"
-    
-    await update.message.reply_text(
-        f"🗂 **Alist 管理面板**\n\n状态: {status_text}",
-        reply_markup=get_alist_keyboard(bool(pid)),
-        parse_mode='Markdown'
-    )
-
-# --- FFmpeg 推流功能 (保留原样) ---
-async def start_stream(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_owner(update.effective_user.id): return
-    global ffmpeg_process
-    args = context.args
-    
-    if len(args) < 2:
-        await update.message.reply_text("⚠️ **参数错误**\n用法: `/stream <链接/路径> <RTMP地址>`", parse_mode='Markdown')
-        return
-
-    if ffmpeg_process and ffmpeg_process.poll() is None:
-        await update.message.reply_text("⚠️ 当前已有推流正在进行，请先发送 /stopstream 停止。")
-        return
-
-    video_input = args[0]
-    rtmp_url = args[1]
-
-    if video_input.startswith("/"):
-        if not get_alist_pid():
-            await update.message.reply_text("⚠️ Alist 未运行，无法使用本地路径。\n请先在菜单中启动 Alist。")
-            return
-        video_input = f"http://127.0.0.1:5244{video_input}"
-        await update.message.reply_text(f"🔗 已转换为本地 Alist 链接:\n`{video_input}`", parse_mode='Markdown')
-
-    await update.message.reply_text(f"🚀 **准备推流**...\n源: `{video_input}`", parse_mode='Markdown')
-
-    command = ["ffmpeg", "-re", "-i", video_input, "-c:v", "libx264", "-preset", "veryfast", "-maxrate", "3000k", "-bufsize", "6000k", "-pix_fmt", "yuv420p", "-g", "50", "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-f", "flv", rtmp_url]
-
-    try:
-        ffmpeg_process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        await update.message.reply_text(f"✅ **推流已后台启动**\nPID: {ffmpeg_process.pid}\n发送 /stopstream 停止。")
-    except Exception as e:
-        await update.message.reply_text(f"❌ 启动 FFmpeg 失败: {e}")
-
-async def stop_stream(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_owner(update.effective_user.id): return
-    global ffmpeg_process
-    if ffmpeg_process and ffmpeg_process.poll() is None:
-        ffmpeg_process.terminate()
-        try:
-            ffmpeg_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            ffmpeg_process.kill()
-        ffmpeg_process = None
-        await update.message.reply_text("🛑 推流已强制停止。")
-    else:
-        await update.message.reply_text("⚠️ 当前没有正在进行的推流任务。")
-
-# --- 基础功能 ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    print(f"➡️ 收到 /start 命令，来自用户: {user_id}")
+    
     if is_owner(user_id):
+        print("✅ 验证通过，发送菜单")
         await update.message.reply_text(
-            f"👑 **Termux 控制台**\n当前用户: `{user_id}`\n请点击下方按钮进行管理：",
+            f"👑 **Termux 控制台**\n当前用户: `{user_id}`",
             reply_markup=get_main_keyboard(),
             parse_mode='Markdown'
         )
     else:
-        # 如果不是主人，明确显示 ID 和修改方法
+        print(f"❌ 验证失败，目标ID: {OWNER_ID}")
         await update.message.reply_text(
-            f"🚫 **访问被拒绝**\n\n"
-            f"您的 Telegram ID: `{user_id}`\n"
-            f"机器人配置的 OWNER_ID: `{OWNER_ID}`\n\n"
-            f"⚠️ **未看到菜单原因**:\n"
-            f"您当前的账号 ID 与代码中配置的 `OWNER_ID` 不一致。\n\n"
-            f"📝 **解决方法**:\n"
-            f"1. 复制上面的 ID: `{user_id}`\n"
-            f"2. 打开 Termux 编辑 `bot.py`\n"
-            f"3. 找到 `OWNER_ID = ...` 并修改\n"
-            f"4. 运行 `pm2 restart termux-bot`",
+            f"🚫 **未授权**\n您的ID: `{user_id}`\n配置ID: `{OWNER_ID}`\n请修改 bot.py",
             parse_mode='Markdown'
         )
 
-def main():
-    print(f"🚀 正在启动 Termux 机器人...")
+async def start_stream(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update.effective_user.id): return
+    global ffmpeg_process
+    if ffmpeg_process and ffmpeg_process.poll() is None:
+        await update.message.reply_text("⚠️ 已有推流在运行")
+        return
     
+    if len(context.args) < 2:
+        await update.message.reply_text("用法: `/stream <文件> <RTMP>`", parse_mode='Markdown')
+        return
+
+    src, rtmp = context.args[0], context.args[1]
+    if src.startswith("/"):
+        src = f"http://127.0.0.1:5244{src}"
+    
+    await update.message.reply_text(f"🚀 启动推流...\n源: {src}")
+    cmd = ["ffmpeg", "-re", "-i", src, "-c:v", "libx264", "-preset", "ultrafast", "-f", "flv", rtmp]
+    try:
+        ffmpeg_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        await update.message.reply_text(f"✅ PID: {ffmpeg_process.pid}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ 错误: {e}")
+
+async def stop_stream(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update.effective_user.id): return
+    global ffmpeg_process
+    if ffmpeg_process:
+        ffmpeg_process.terminate()
+        ffmpeg_process = None
+        await update.message.reply_text("🛑 已停止")
+    else:
+        await update.message.reply_text("⚠️ 无运行中的推流")
+
+def main():
+    print(f"🚀 机器人启动中...")
+    print(f"📍 当前配置 OWNER_ID: {OWNER_ID}")
+    
+    if TOKEN == "YOUR_BOT_TOKEN_HERE" or not TOKEN:
+        print("❌ 错误: TOKEN 未配置！请编辑 bot.py")
+        return
+
     application = ApplicationBuilder().token(TOKEN).build()
     
-    # 基础命令
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("env", check_env))
-    application.add_handler(CommandHandler("alist", alist_menu))
     application.add_handler(CommandHandler("stream", start_stream))
     application.add_handler(CommandHandler("stopstream", stop_stream))
-    
-    # 注册按钮回调处理器
     application.add_handler(CallbackQueryHandler(button_callback))
     
-    print("✅ 机器人运行中...")
+    print("✅ Polling 开始... (按 Ctrl+C 停止)")
     application.run_polling()
 
 if __name__ == '__main__':
