@@ -19,6 +19,7 @@ OWNER_ID = 1878794912
 # -------------------------
 
 CONFIG_FILE = "bot_config.json"
+FFMPEG_LOG_FILE = "ffmpeg.log"
 # 全局变量用于存储 FFmpeg 进程
 ffmpeg_process = None
 
@@ -128,6 +129,20 @@ def get_local_ip():
     except Exception:
         return "127.0.0.1"
 
+def get_all_ips():
+    """获取所有可能的局域网 IP"""
+    ips = []
+    try:
+        interfaces = psutil.net_if_addrs()
+        for name, snics in interfaces.items():
+            if name.lower().startswith(('lo', 'tun', 'rmnet')): continue
+            for snic in snics:
+                if snic.family == socket.AF_INET:
+                    ips.append(f"{name}: {snic.address}")
+    except:
+        pass
+    return ips
+
 def get_env_report():
     """生成环境报告文本"""
     ffmpeg_ver = check_program("ffmpeg")
@@ -196,7 +211,8 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         f"🚀 **启动推流任务**\n\n"
         f"📄 **源地址**: `{raw_src}`\n"
         f"🔗 **处理后**: `{src}`\n"
-        f"📡 **推流目标**: `{display_rtmp}`", 
+        f"📡 **推流目标**: `{display_rtmp}`\n\n"
+        "⏳ 正在启动进程...", 
         parse_mode='Markdown'
     )
 
@@ -213,10 +229,51 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     ]
     
     try:
-        ffmpeg_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        await update.message.reply_text(f"✅ 推流进程已启动 (PID: {ffmpeg_process.pid})")
+        # 打开日志文件
+        log_file = open(FFMPEG_LOG_FILE, "w")
+        
+        # 将 stdout 和 stderr 都重定向到日志文件
+        ffmpeg_process = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
+        
+        # 等待 3 秒检查进程状态
+        await asyncio.sleep(3)
+        
+        if ffmpeg_process.poll() is not None:
+             # 进程已退出，说明启动失败
+             log_file.close() # 关闭文件以刷新内容
+             
+             log_content = "无日志记录"
+             try:
+                 with open(FFMPEG_LOG_FILE, "r") as f:
+                     # 读取最后 800 个字符
+                     log_content = f.read()[-800:]
+             except Exception as e:
+                 log_content = f"读取日志失败: {e}"
+
+             await update.message.reply_text(
+                 f"❌ **推流启动失败** (进程意外退出)\n\n"
+                 f"🔍 **错误详情 (最后日志)**:\n"
+                 f"```\n{log_content}\n```\n"
+                 f"请检查源链接是否有效，或 RTMP 地址是否正确。", 
+                 parse_mode='Markdown'
+             )
+             ffmpeg_process = None
+        else:
+             # 进程仍在运行
+             keyboard = InlineKeyboardMarkup([
+                 [InlineKeyboardButton("📜 查看实时日志", callback_data="btn_view_log")],
+                 [InlineKeyboardButton("🛑 停止推流", callback_data="btn_stop_stream_quick")]
+             ])
+             await update.message.reply_text(
+                 f"✅ **推流已稳定运行**\n"
+                 f"PID: {ffmpeg_process.pid}\n\n"
+                 f"如果画面仍未显示，请点击下方 [查看实时日志] 排查问题。",
+                 reply_markup=keyboard,
+                 parse_mode='Markdown'
+             )
+             
     except Exception as e:
-        await update.message.reply_text(f"❌ 启动失败: {e}")
+        await update.message.reply_text(f"❌ 启动异常: {e}")
 
 # --- 键盘菜单 ---
 def get_main_keyboard():
@@ -239,6 +296,7 @@ def get_alist_keyboard(is_running):
 def get_stream_settings_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📝 修改推流地址", callback_data="btn_edit_server"), InlineKeyboardButton("🔑 修改推流密钥", callback_data="btn_edit_key")],
+        [InlineKeyboardButton("📜 查看推流日志", callback_data="btn_view_log")],
         [InlineKeyboardButton("🔙 返回主菜单", callback_data="btn_back_main")]
     ])
 
@@ -249,6 +307,7 @@ def get_back_keyboard():
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
+    global ffmpeg_process
     
     if not is_owner(user_id):
         await query.answer("❌ 无权操作", show_alert=True)
@@ -298,9 +357,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"🗂 **Alist 面板**\n状态: {'✅ 运行中' if pid else '🔴 已停止'}", reply_markup=get_alist_keyboard(bool(pid)), parse_mode='Markdown')
     elif data == "btn_alist_info":
         local_ip = get_local_ip()
+        all_ips = get_all_ips()
+        ip_list_text = "\n".join([f"• `{ip}`" for ip in all_ips]) if all_ips else f"• `{local_ip}`"
+        
         await context.bot.send_message(
             chat_id=user_id, 
-            text=f"🌐 **Alist 访问地址**:\n\n📡 **局域网**: `http://{local_ip}:5244`\n\n📱 **本机**: `http://127.0.0.1:5244`", 
+            text=f"🌐 **Alist 访问地址**:\n\n📱 **本机**: `http://127.0.0.1:5244`\n\n📡 **局域网 (尝试以下地址)**:\n{ip_list_text}\n\n端口: `5244`", 
             parse_mode='Markdown'
         )
     elif data == "btn_alist_admin":
@@ -319,61 +381,75 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # --- 修复 Alist 访问 ---
     elif data == "btn_alist_fix":
-        # 停止 Alist
+        # 1. 停止 Alist
         pid = get_alist_pid()
         if pid:
-            os.kill(pid, signal.SIGTERM)
-            await asyncio.sleep(1)
+            try:
+                os.kill(pid, signal.SIGTERM)
+                for _ in range(10): # 等待 5 秒
+                    await asyncio.sleep(0.5)
+                    if not get_alist_pid():
+                        break
+                if get_alist_pid():
+                    os.kill(pid, signal.SIGKILL)
+            except:
+                pass
         
-        # 查找配置
+        # 2. 查找并修改配置
         fixed_count = 0
         log_msg = "🛠 **执行修复操作...**\n"
         search_paths = [
             os.path.join(os.getcwd(), "data", "config.json"),
-            os.path.expanduser("~/.alist/data/config.json")
+            os.path.expanduser("~/.alist/data/config.json"),
         ]
         
+        found_config = False
         for p in search_paths:
             if os.path.exists(p):
+                found_config = True
                 try:
                     with open(p, 'r') as f:
                         config_data = json.load(f)
                     
                     changed = False
-                    # V3 格式
-                    if 'scheme' in config_data and isinstance(config_data['scheme'], dict):
+                    # 确保 scheme 存在
+                    if 'scheme' not in config_data:
+                        config_data['scheme'] = {}
+                        changed = True
+                    
+                    # 强制修改 scheme.address
+                    if isinstance(config_data['scheme'], dict):
                         if config_data['scheme'].get('address') != '0.0.0.0':
                             config_data['scheme']['address'] = '0.0.0.0'
-                            changed = True
-                    # 旧格式或 Root 层级
-                    elif 'address' in config_data:
-                        if config_data.get('address') != '0.0.0.0':
-                            config_data['address'] = '0.0.0.0'
                             changed = True
                     
                     if changed:
                         with open(p, 'w') as f:
                             json.dump(config_data, f, indent=4)
                         fixed_count += 1
-                        log_msg += f"✅ 已修复配置文件: `{p}`\n"
+                        log_msg += f"✅ 已修改配置文件: `{p}`\n"
                     else:
                         log_msg += f"👌 配置无需修改: `{p}`\n"
                         
                 except Exception as e:
-                    log_msg += f"❌ 读取配置文件失败: {str(e)}\n"
+                    log_msg += f"❌ 配置文件错误 `{p}`: {str(e)}\n"
         
-        if fixed_count == 0 and "✅" not in log_msg and "👌" not in log_msg:
-             log_msg += "⚠️ 未找到配置文件，请先启动一次 Alist 以生成配置。\n"
+        if not found_config:
+             log_msg += "⚠️ 未找到配置文件，尝试启动以生成默认配置。\n"
 
-        # 重启
+        # 3. 重启 Alist
         subprocess.Popen(["alist", "server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
         
         new_pid = get_alist_pid()
         status = "✅ 重启成功" if new_pid else "❌ 重启失败"
         
+        # 获取所有 IP 提示用户
+        all_ips = get_all_ips()
+        ip_hint = "\n".join([f"`http://{ip.split(': ')[1]}:5244`" for ip in all_ips]) if all_ips else "无法获取 IP"
+
         await query.edit_message_text(
-            f"🔧 **修复结果报告**\n\n{log_msg}\n状态: {status}\n\n👉 现在尝试通过局域网访问吧。",
+            f"🔧 **修复结果报告**\n\n{log_msg}\n状态: {status}\n\n📡 **请尝试以下局域网地址**:\n{ip_hint}",
             reply_markup=get_alist_keyboard(bool(new_pid)),
             parse_mode='Markdown'
         )
@@ -410,6 +486,35 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✍️ **请回复 推流密钥**：\n\n例如：`?streamname=...`\n\n(回复 `cancel` 取消)",
             parse_mode='Markdown'
         )
+        
+    elif data == "btn_view_log":
+        log_content = "暂无日志"
+        try:
+             with open(FFMPEG_LOG_FILE, "r") as f:
+                 log_content = f.read()[-1500:] # 获取最后1500字符
+        except Exception as e:
+             log_content = f"读取失败: {e}"
+        
+        if not log_content.strip():
+            log_content = "日志文件为空，FFmpeg 可能尚未输出任何信息。"
+
+        # 如果日志太长，截断
+        if len(log_content) > 3000:
+            log_content = "..." + log_content[-3000:]
+            
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=f"📜 **实时日志片段**:\n\n```\n{log_content}\n```",
+            parse_mode='Markdown'
+        )
+        
+    elif data == "btn_stop_stream_quick":
+        if ffmpeg_process:
+            ffmpeg_process.terminate()
+            ffmpeg_process = None
+            await query.edit_message_text("🛑 **已手动停止推流**", reply_markup=get_main_keyboard(), parse_mode='Markdown')
+        else:
+            await query.edit_message_text("⚠️ **当前没有正在运行的推流**", reply_markup=get_main_keyboard(), parse_mode='Markdown')
 
     elif data == "btn_update":
          await query.edit_message_text("♻️ **正在更新系统...**\n\n1. 正在备份当前配置...\n2. 拉取最新代码...\n3. 机器人将自动重启。", parse_mode='Markdown')
