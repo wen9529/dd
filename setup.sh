@@ -63,6 +63,10 @@ if ! command -v alist &> /dev/null; then
     echo "  🗂 安装 Alist..."
     pkg install alist -y
 fi
+if ! command -v node &> /dev/null; then
+    echo "  📦 安装 Node.js (PM2 依赖)..."
+    pkg install nodejs -y
+fi
 
 echo "  🐍 安装 Python 依赖..."
 pip install --upgrade pip > /dev/null 2>&1
@@ -71,6 +75,7 @@ pip install -r requirements.txt
 # 4. PM2 守护进程配置
 echo -e "\n${BLUE}[4/6] 配置后台进程...${NC}"
 if ! command -v pm2 &> /dev/null; then
+    echo "  ⚙️ 安装 PM2..."
     npm install -g pm2
 fi
 
