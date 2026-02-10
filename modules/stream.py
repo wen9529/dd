@@ -31,12 +31,12 @@ def get_log_content(max_chars=1500):
         content = "日志文件为空，FFmpeg 可能尚未输出任何信息。"
     return content
 
-async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = None, background_image: str = None):
+async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = None, background_image=None):
     """执行推流逻辑
     Args:
         raw_src: 视频或音频源路径
         custom_rtmp: 自定义 RTMP 地址
-        background_image: 静态图片路径 (如果提供此参数，则开启 音频+图片 模式)
+        background_image: 静态图片路径 (str) 或图片列表 (List[str])
     """
     global ffmpeg_process
     
@@ -77,15 +77,29 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         encoded_src = quote(src, safe='/')
         src = f"http://127.0.0.1:5244{encoded_src}"
     
-    # 4. 发送反馈
+    # 4. 判断模式并发送反馈
     display_rtmp = rtmp_url[:15] + "..." if len(rtmp_url) > 15 else rtmp_url
     
-    mode_text = "🎵 音频+图片模式" if background_image else ("💿 本地视频模式" if is_local_file else "🌐 网络流/Alist模式")
+    is_slideshow = isinstance(background_image, list) and len(background_image) > 0
+    is_single_image = isinstance(background_image, str)
+    
+    if is_slideshow:
+        mode_text = f"🎵 音频+多图轮播 ({len(background_image)}张)"
+        img_info = "多张图片"
+    elif is_single_image:
+        mode_text = "🎵 音频+单图模式"
+        img_info = os.path.basename(background_image)
+    elif is_local_file:
+        mode_text = "💿 本地视频模式"
+        img_info = "无"
+    else:
+        mode_text = "🌐 网络流/Alist模式"
+        img_info = "无"
     
     await message.reply_text(
         f"🚀 **启动推流任务** (极速模式)\n\n"
         f"📄 **源**: `{os.path.basename(src)}`\n"
-        f"🖼 **图**: `{os.path.basename(background_image) if background_image else '无'}`\n"
+        f"🖼 **图**: `{img_info}`\n"
         f"📡 **目标**: `{display_rtmp}`\n"
         f"{mode_text}\n\n"
         "⏳ 正在启动进程...", 
@@ -107,7 +121,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         "-hide_banner",
     ]
     
-    if not is_local_file and not background_image:
+    if not is_local_file and not (is_slideshow or is_single_image):
         cmd.extend([
             "-headers", headers_str,
             "-reconnect", "1", 
@@ -121,29 +135,67 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
 
     cmd.extend(["-probesize", "10M", "-analyzeduration", "10M"])
 
-    if background_image:
-        # --- 音频 + 图片模式 ---
+    if is_slideshow:
+        # --- 多图轮播模式 ---
+        # 创建 concat 列表文件
+        list_file = "slideshow_list.txt"
+        with open(list_file, "w") as f:
+            for img_path in background_image:
+                # 转义单引号
+                safe_path = img_path.replace("'", "'\\''")
+                f.write(f"file '{safe_path}'\n")
+                f.write(f"duration 5\n") # 每张图显示 5 秒
+        
         cmd.extend([
-            "-loop", "1",           # 循环图片
-            "-framerate", "2",      # 静态图不需要高帧率，2fps 足够
-            "-i", background_image, # 输入0: 图片
-            "-re",                  # 按照音频速率读取
+            "-re",                  # 实时读取速度
+            "-stream_loop", "-1",   # 循环播放输入
+            "-f", "concat",
+            "-safe", "0",
+            "-i", list_file,        # 输入0: concat列表
             "-i", src,              # 输入1: 音频
             
-            # 视频编码 (图片)
+            # 视频编码
             "-c:v", "libx264",
             "-preset", "ultrafast",
-            "-tune", "stillimage",  # 优化静态图
             "-pix_fmt", "yuv420p",
-            "-g", "10",             # 关键帧间隔
-            "-b:v", "1000k",        # 静态图码率可以低一点
+            # 关键：统一缩放到 1080x1920 (竖屏)，保持比例，背景填充黑边
+            # 这样可以防止不同尺寸的图片导致 FFmpeg 崩溃或推流断流
+            "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+            "-g", "20",             
+            "-b:v", "1500k",
+            "-r", "10",             # 输出 10fps
             
             # 音频编码
             "-c:a", "aac", 
             "-ar", "44100", 
             "-b:a", "128k",
             
-            "-shortest"             # 音频结束时停止推流
+            "-shortest"             # 音频结束时停止
+        ])
+    
+    elif is_single_image:
+        # --- 单图模式 (保持原有的高效 -loop 1) ---
+        cmd.extend([
+            "-loop", "1",           
+            "-framerate", "10",     
+            "-i", background_image, 
+            "-re",                  
+            "-i", src,              
+            
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-tune", "stillimage",
+            "-pix_fmt", "yuv420p",
+            # 同样应用缩放限制，防止单图过大
+            "-vf", "scale='min(1920,iw)':-2,scale='trunc(iw/2)*2':'trunc(ih/2)*2'",
+            "-g", "20",             
+            "-b:v", "1500k",        
+            
+            "-c:a", "aac", 
+            "-ar", "44100", 
+            "-b:a", "128k",
+            
+            "-shortest"             
         ])
     else:
         # --- 纯视频模式 ---

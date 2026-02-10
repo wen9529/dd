@@ -22,6 +22,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- 辅助函数：生成图片选择键盘 ---
+def get_image_select_keyboard(images, selected_indices):
+    keyboard = []
+    # 生成图片列表按钮
+    for idx, img in enumerate(images):
+        is_selected = idx in selected_indices
+        mark = "✅" if is_selected else "⬜"
+        btn_text = f"{mark} {img['name']}"
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"toggle_img_{idx}")])
+    
+    # 底部控制按钮
+    ctrl_row = []
+    if selected_indices:
+        ctrl_row.append(InlineKeyboardButton(f"🚀 开始推流 ({len(selected_indices)}张)", callback_data="btn_start_slideshow"))
+        ctrl_row.append(InlineKeyboardButton("❌ 清空", callback_data="btn_clear_imgs"))
+    
+    keyboard.append(ctrl_row)
+    keyboard.append([InlineKeyboardButton("🔙 返回重选音频", callback_data="btn_audio_stream")])
+    return InlineKeyboardMarkup(keyboard)
+
 # --- 回调处理 ---
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -38,6 +58,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['state'] = None
         # 清理临时数据
         if 'temp_audio' in context.user_data: del context.user_data['temp_audio']
+        if 'selected_img_indices' in context.user_data: del context.user_data['selected_img_indices']
         
         await query.edit_message_text(
             f"👑 **Termux 控制台**\n当前用户: `{user_id}`\n",
@@ -99,6 +120,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
              return
         
         context.user_data['local_audios'] = audios
+        # 清空之前的图片选择
+        context.user_data['selected_img_indices'] = set()
+        
         keyboard = []
         for idx, v in enumerate(audios):
             btn_text = f"🎵 {v['name']} ({format_size(v['size'])})"
@@ -113,54 +137,78 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data.startswith("play_aud_"):
-        # 选中音频，现在选择图片
+        # 选中音频，现在进入图片多选模式
         idx = int(data.split("_")[-1])
         audios = context.user_data.get('local_audios', [])
+        
         if 0 <= idx < len(audios):
              context.user_data['temp_audio'] = audios[idx]['path']
+             context.user_data['temp_audio_name'] = audios[idx]['name']
              
              # 扫描图片
              images = scan_local_images()
-             if not images:
-                 await query.answer("⚠️ 未找到图片，将使用黑屏推流", show_alert=False)
-                 # 如果没有图片，也可以做逻辑，这里暂时提示
-             
              context.user_data['local_images'] = images
-             keyboard = []
-             for img_idx, img in enumerate(images):
-                 btn_text = f"🖼 {img['name']}"
-                 keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"use_img_{img_idx}")])
-            
-             keyboard.append([InlineKeyboardButton("🔙 返回重选音频", callback_data="btn_audio_stream")])
+             context.user_data['selected_img_indices'] = set() # 初始化选择集合
+             
+             if not images:
+                 # 无图片，直接使用默认黑屏/占位推流 (暂不处理，提示用户)
+                 await query.answer("⚠️ 未找到图片，无法使用图文模式", show_alert=True)
+                 return
              
              await query.edit_message_text(
-                f"📂 **步骤 2/2: 选择背景图片**\n"
+                f"📂 **步骤 2/2: 选择轮播图片** (支持多选)\n"
                 f"已选音频: `{audios[idx]['name']}`\n\n"
-                "请选择一张图片作为视频背景：",
-                reply_markup=InlineKeyboardMarkup(keyboard),
+                "请点击图片进行勾选，最后点击【开始推流】：",
+                reply_markup=get_image_select_keyboard(images, set()),
                 parse_mode='Markdown'
              )
         else:
              await query.answer("❌ 文件索引无效", show_alert=True)
 
-    elif data.startswith("use_img_"):
-        # 选中图片，开始推流
-        img_idx = int(data.split("_")[-1])
+    elif data.startswith("toggle_img_"):
+        # 切换图片选中状态
+        idx = int(data.split("_")[-1])
+        selected = context.user_data.get('selected_img_indices', set())
+        
+        if idx in selected:
+            selected.remove(idx)
+        else:
+            selected.add(idx)
+            
+        context.user_data['selected_img_indices'] = selected
+        
+        # 刷新键盘
         images = context.user_data.get('local_images', [])
+        await query.edit_message_reply_markup(reply_markup=get_image_select_keyboard(images, selected))
+
+    elif data == "btn_clear_imgs":
+        context.user_data['selected_img_indices'] = set()
+        images = context.user_data.get('local_images', [])
+        await query.edit_message_reply_markup(reply_markup=get_image_select_keyboard(images, set()))
+
+    elif data == "btn_start_slideshow":
+        # 开始多图推流
         audio_path = context.user_data.get('temp_audio')
+        selected_indices = context.user_data.get('selected_img_indices', set())
+        images = context.user_data.get('local_images', [])
         
         if not audio_path:
              await query.answer("❌ 音频路径丢失，请重新操作", show_alert=True)
              return
+        
+        if not selected_indices:
+             await query.answer("⚠️ 请至少选择一张图片", show_alert=True)
+             return
              
-        if 0 <= img_idx < len(images):
-             image_path = images[img_idx]['path']
-             # 开始推流
-             await run_ffmpeg_stream(update, audio_path, background_image=image_path)
-             # 清理
-             del context.user_data['temp_audio']
-        else:
-             await query.answer("❌ 图片索引无效", show_alert=True)
+        # 获取选中的图片路径列表
+        selected_image_paths = [images[i]['path'] for i in sorted(list(selected_indices))]
+        
+        # 开始推流
+        await run_ffmpeg_stream(update, audio_path, background_image=selected_image_paths)
+        
+        # 清理
+        del context.user_data['temp_audio']
+        del context.user_data['selected_img_indices']
 
 
     elif data.startswith("play_loc_"):
