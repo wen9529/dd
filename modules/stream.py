@@ -110,7 +110,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     key_info = f"🔑 使用密钥: **{current_key_name}**" if key else "🔑 使用旧版完整链接"
 
     await message.reply_text(
-        f"🚀 **启动推流任务** (极速模式)\n\n"
+        f"🚀 **启动推流任务** (优化版)\n\n"
         f"📄 **源**: `{os.path.basename(src)}`\n"
         f"🖼 **图**: `{img_info}`\n"
         f"{key_info}\n"
@@ -133,6 +133,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         "ffmpeg", 
         "-y",
         "-hide_banner",
+        "-threads", "4",  # 限制线程数，防止 Termux 过热
     ]
     
     if not is_local_file and not (is_slideshow or is_single_image):
@@ -160,54 +161,70 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
                 f.write(f"file '{safe_path}'\n")
                 f.write(f"duration 5\n") # 每张图显示 5 秒
         
+        # 为了防止 concat 最后一张图不循环，重复最后一张
+        if background_image:
+             safe_path = background_image[-1].replace("'", "'\\''")
+             f.write(f"file '{safe_path}'\n")
+
         cmd.extend([
-            "-re",                  # 实时读取速度
-            "-stream_loop", "-1",   # 循环播放输入
+            "-re",                  
+            "-stream_loop", "-1",   # 输入流循环
             "-f", "concat",
             "-safe", "0",
-            "-i", list_file,        # 输入0: concat列表
-            "-i", src,              # 输入1: 音频
+            "-i", list_file,        # Input 0: 图片列表
+            "-i", src,              # Input 1: 音频
+            
+            # 显式映射：确保视频取自输入0，音频取自输入1
+            "-map", "0:v:0",
+            "-map", "1:a:0",
             
             # 视频编码
             "-c:v", "libx264",
             "-preset", "ultrafast",
+            "-tune", "zerolatency", # 降低延迟，避免缓冲
             "-pix_fmt", "yuv420p",
-            # 关键：统一缩放到 1080x1920 (竖屏)，保持比例，背景填充黑边
-            # 这样可以防止不同尺寸的图片导致 FFmpeg 崩溃或推流断流
-            "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
-            "-g", "20",             
-            "-b:v", "1500k",
-            "-r", "10",             # 输出 10fps
+            # 720P 分辨率
+            "-vf", "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+            "-g", "30",             # 关键帧间隔 2s (15fps * 2)
+            "-b:v", "1000k",        
+            "-r", "15",             # 提高到 15fps，满足 RTMP 最低标准
+            "-vsync", "cfr",        # 关键：强制输出固定帧率，防止直播断流
             
             # 音频编码
             "-c:a", "aac", 
             "-ar", "44100", 
             "-b:a", "128k",
+            "-max_muxing_queue_size", "4096",
             
             "-shortest"             # 音频结束时停止
         ])
     
     elif is_single_image:
-        # --- 单图模式 (保持原有的高效 -loop 1) ---
+        # --- 单图模式 ---
         cmd.extend([
             "-loop", "1",           
-            "-framerate", "10",     
-            "-i", background_image, 
+            "-framerate", "15",     # 提高输入帧率
+            "-i", background_image, # Input 0
             "-re",                  
-            "-i", src,              
+            "-i", src,              # Input 1
+            
+            "-map", "0:v:0",
+            "-map", "1:a:0",
             
             "-c:v", "libx264",
             "-preset", "ultrafast",
             "-tune", "stillimage",
             "-pix_fmt", "yuv420p",
-            # 同样应用缩放限制，防止单图过大
-            "-vf", "scale='min(1920,iw)':-2,scale='trunc(iw/2)*2':'trunc(ih/2)*2'",
-            "-g", "20",             
-            "-b:v", "1500k",        
+            "-vf", "scale='min(720,iw)':-2,scale='trunc(iw/2)*2':'trunc(ih/2)*2'",
+            "-g", "30",             
+            "-b:v", "1000k",        
+            "-r", "15",             # 输出 15fps
+            "-vsync", "cfr",        # 强制固定帧率
             
             "-c:a", "aac", 
             "-ar", "44100", 
             "-b:a", "128k",
+            "-max_muxing_queue_size", "4096",
             
             "-shortest"             
         ])
@@ -273,7 +290,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
                  [InlineKeyboardButton("🛑 停止推流", callback_data="btn_stop_stream_quick")]
              ])
              await message.reply_text(
-                 f"✅ **推流已稳定运行**\n"
+                 f"✅ **推流已稳定运行** (优化版)\n"
                  f"PID: {ffmpeg_process.pid}\n\n"
                  f"模式: {mode_text}\n"
                  f"画面应在 5秒内出现。如果仍黑屏，请检查网络上传带宽。",
