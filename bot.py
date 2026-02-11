@@ -41,7 +41,9 @@ def get_image_select_keyboard(images, selected_indices):
     # 底部控制按钮
     ctrl_row = []
     if selected_indices:
-        ctrl_row.append(InlineKeyboardButton(f"🚀 开始推流 ({len(selected_indices)}张)", callback_data="btn_start_slideshow"))
+        count = len(selected_indices)
+        text = "🚀 开始推流 (单图)" if count == 1 else f"🚀 开始轮播 ({count}张)"
+        ctrl_row.append(InlineKeyboardButton(text, callback_data="btn_start_slideshow"))
         ctrl_row.append(InlineKeyboardButton("❌ 清空", callback_data="btn_clear_imgs"))
     
     keyboard.append(ctrl_row)
@@ -130,6 +132,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
              
              images = scan_local_images()
              context.user_data['local_images'] = images
+             # 初始化为 set 集合
              context.user_data['selected_img_indices'] = set()
              
              if not images:
@@ -149,9 +152,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- 图片多选逻辑 ---
     elif data.startswith("toggle_img_"):
         idx = int(data.split("_")[-1])
-        selected = context.user_data.get('selected_img_indices', set())
-        if idx in selected: selected.remove(idx)
-        else: selected.add(idx)
+        
+        # 强制类型转换，防止 user_data 自动序列化为 list
+        raw_selected = context.user_data.get('selected_img_indices', set())
+        if isinstance(raw_selected, list):
+            selected = set(raw_selected)
+        else:
+            selected = raw_selected
+            
+        if idx in selected: 
+            selected.remove(idx)
+        else: 
+            selected.add(idx)
+            
         context.user_data['selected_img_indices'] = selected
         images = context.user_data.get('local_images', [])
         await query.edit_message_reply_markup(reply_markup=get_image_select_keyboard(images, selected))
@@ -162,20 +175,39 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_reply_markup(reply_markup=get_image_select_keyboard(images, set()))
 
     elif data == "btn_start_slideshow":
-        audio_path = context.user_data.get('temp_audio')
-        selected_indices = context.user_data.get('selected_img_indices', set())
-        images = context.user_data.get('local_images', [])
-        
-        if not audio_path:
-             await query.answer("❌ 数据丢失，请重试", show_alert=True)
-             return
-        if not selected_indices:
-             await query.answer("⚠️ 请至少选择一张图片！", show_alert=True)
-             return
-        selected_image_paths = [images[i]['path'] for i in sorted(list(selected_indices))]
-        await run_ffmpeg_stream(update, audio_path, background_image=selected_image_paths)
-        del context.user_data['temp_audio']
-        del context.user_data['selected_img_indices']
+        try:
+            audio_path = context.user_data.get('temp_audio')
+            # 同样确保类型安全
+            raw_selected = context.user_data.get('selected_img_indices', set())
+            selected_indices = set(raw_selected) if isinstance(raw_selected, list) else raw_selected
+            images = context.user_data.get('local_images', [])
+            
+            if not audio_path:
+                 await query.answer("❌ 数据丢失，请重试", show_alert=True)
+                 return
+            if not selected_indices:
+                 await query.answer("⚠️ 请至少选择一张图片！", show_alert=True)
+                 return
+                 
+            # 排序保证顺序一致
+            selected_image_paths = [images[i]['path'] for i in sorted(list(selected_indices))]
+            
+            # --- 关键修复 ---
+            # 如果只选了一张图，直接传字符串，触发 stream.py 的单图极速优化模式
+            # 如果是多张图，传列表，触发轮播模式
+            bg_arg = selected_image_paths
+            if len(selected_image_paths) == 1:
+                bg_arg = selected_image_paths[0]
+
+            await run_ffmpeg_stream(update, audio_path, background_image=bg_arg)
+            
+            # 清理状态
+            del context.user_data['temp_audio']
+            del context.user_data['selected_img_indices']
+            
+        except Exception as e:
+            logger.error(f"启动推流失败: {e}")
+            await query.answer(f"❌ 启动失败: {e}", show_alert=True)
 
     # --- Alist 逻辑 ---
     elif data == "btn_alist_start":
