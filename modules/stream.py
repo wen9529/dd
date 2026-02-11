@@ -154,17 +154,18 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             "-map", "0:v:0", "-map", "1:a:0",
             
             # 3. 编码参数
-            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+            # 强制 720p 并使用黑边填充，保持宽高比，减少 CPU 压力
             "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=15,format=yuv420p",
             "-g", "30",
             "-b:v", "1000k", "-maxrate", "1500k", "-bufsize", "3000k",
             
-            # 音频参数：强制双声道 (关键修复) + 异步重采样
+            # 音频参数
             "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
             "-af", "aresample=async=1",
             
             "-shortest", 
-            "-max_muxing_queue_size", "4096"
+            "-max_muxing_queue_size", "9999"
         ])
 
     elif is_single_image:
@@ -175,15 +176,17 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             "-re", "-i", src,
             
             "-map", "0:v:0", "-map", "1:a:0",
-            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-            "-vf", "scale='min(1280,iw)':-2,scale='trunc(iw/2)*2':'trunc(ih/2)*2',fps=15,format=yuv420p",
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+            # 统一使用 720p 填充算法，确保即使是 4K 图片也能流畅处理
+            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=15,format=yuv420p",
             "-g", "30", "-b:v", "1000k", "-maxrate", "1500k", "-bufsize", "3000k",
             
-            # 音频参数：强制双声道 + 异步重采样
+            # 音频参数
             "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
             "-af", "aresample=async=1",
             
-            "-shortest"
+            "-shortest",
+            "-max_muxing_queue_size", "9999"
         ])
 
     else:
@@ -193,7 +196,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
             "-b:v", "2500k", "-maxrate", "3000k", "-bufsize", "6000k",
             "-g", "60", 
-            # 关键：添加缩放滤镜，确保宽和高都是偶数，并强制像素格式
+            # 视频模式下，仅强制偶数分辨率，不强制缩放，保留原画质
             "-vf", "scale='trunc(iw/2)*2':'trunc(ih/2)*2',format=yuv420p",
             "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
             "-af", "aresample=async=1"
