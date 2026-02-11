@@ -23,280 +23,201 @@ def stop_ffmpeg_process():
 def get_log_content(max_chars=1500):
     content = "暂无日志"
     try:
-         with open(FFMPEG_LOG_FILE, "r") as f:
-             content = f.read()[-max_chars:]
+         if os.path.exists(FFMPEG_LOG_FILE):
+             with open(FFMPEG_LOG_FILE, "r", encoding='utf-8', errors='ignore') as f:
+                 # 读取最后的部分
+                 f.seek(0, os.SEEK_END)
+                 file_size = f.tell()
+                 seek_point = max(0, file_size - max_chars * 2) # 读取稍多一点以防 encoding 问题
+                 f.seek(seek_point)
+                 content = f.read()[-max_chars:]
+         else:
+             content = "日志文件尚未创建。"
     except Exception as e:
          content = f"读取失败: {e}"
+    
     if not content.strip():
-        content = "日志文件为空，FFmpeg 可能尚未输出任何信息。"
+        content = "日志为空 (FFmpeg 可能刚启动或未输出错误)。"
     return content
 
 async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = None, background_image=None):
-    """执行推流逻辑
-    Args:
-        raw_src: 视频或音频源路径
-        custom_rtmp: 自定义 RTMP 地址
-        background_image: 静态图片路径 (str) 或图片列表 (List[str])
-    """
+    """执行推流逻辑"""
     global ffmpeg_process
     
-    # 使用 effective_message 以兼容 CommandHandler (update.message) 和 CallbackQueryHandler (update.callback_query.message)
     message = update.effective_message
 
-    # 1. 检查是否已有任务
     if get_stream_status():
-        await message.reply_text("⚠️ **推流正在进行中**\n请先使用 `/stopstream` 停止当前任务，或等待其结束。", parse_mode='Markdown')
+        await message.reply_text("⚠️ **推流正在进行中**\n请先使用 `/stopstream` 停止当前任务。", parse_mode='Markdown')
         return
 
-    # 2. 获取 RTMP 地址
+    # --- 获取配置 ---
     config = load_config()
     server = config.get('rtmp_server', '')
-    
-    # --- 获取当前激活的密钥 ---
     stream_keys = config.get('stream_keys', [])
     active_index = config.get('active_key_index', 0)
-    current_key_name = "未命名"
-    key = ""
     
+    key = ""
+    current_key_name = "未命名"
     if stream_keys and 0 <= active_index < len(stream_keys):
         key = stream_keys[active_index]['key']
         current_key_name = stream_keys[active_index]['name']
     
-    legacy_rtmp = config.get('rtmp', '')
-    alist_token = config.get('alist_token', '')
-    
-    rtmp_url = ""
-    if custom_rtmp:
-        rtmp_url = custom_rtmp
-    elif server and key:
-        rtmp_url = server + key
-    elif legacy_rtmp:
-        rtmp_url = legacy_rtmp
+    rtmp_url = custom_rtmp if custom_rtmp else (server + key if server and key else config.get('rtmp', ''))
         
     if not rtmp_url:
-        await message.reply_text("❌ **未配置推流地址**\n请先在菜单中点击 [📺 推流设置] -> [🔑 管理密钥] 进行配置。", parse_mode='Markdown')
+        await message.reply_text("❌ **推流地址无效**\n请检查 [📺 推流设置]。", parse_mode='Markdown')
         return
 
-    # 3. 处理源链接
+    # --- 处理文件路径 ---
     src = raw_src.strip()
-    is_local_file = False
+    is_local_file = os.path.exists(src)
     
-    if os.path.exists(src):
-        is_local_file = True
-    elif src.startswith("/"):
+    if not is_local_file and src.startswith("/"):
+        # Alist 路径处理
         encoded_src = quote(src, safe='/')
         src = f"http://127.0.0.1:5244{encoded_src}"
     
-    # 4. 判断模式并发送反馈
-    display_rtmp = rtmp_url[:25] + "..." if len(rtmp_url) > 25 else rtmp_url
-    
+    # --- 模式判断 ---
+    display_rtmp = rtmp_url[:20] + "..." + rtmp_url[-5:] if len(rtmp_url) > 30 else rtmp_url
     is_slideshow = isinstance(background_image, list) and len(background_image) > 0
-    is_single_image = isinstance(background_image, str)
+    is_single_image = isinstance(background_image, str) and background_image
     
+    mode_text = "未知模式"
     if is_slideshow:
-        mode_text = f"🎵 音频+多图轮播 ({len(background_image)}张)"
-        img_info = "多张图片"
+        mode_text = f"🎵 音频+轮播 ({len(background_image)}图)"
     elif is_single_image:
-        mode_text = "🎵 音频+单图模式"
-        img_info = os.path.basename(background_image)
+        mode_text = "🎵 音频+单图"
     elif is_local_file:
-        mode_text = "💿 本地视频模式"
-        img_info = "无"
+        mode_text = "💿 本地视频"
     else:
-        mode_text = "🌐 网络流/Alist模式"
-        img_info = "无"
-    
-    # 显示使用的密钥名称
-    key_info = f"🔑 使用密钥: **{current_key_name}**" if key else "🔑 使用旧版完整链接"
+        mode_text = "🌐 网络/Alist"
 
-    await message.reply_text(
-        f"🚀 **启动推流任务** (优化版)\n\n"
-        f"📄 **源**: `{os.path.basename(src)}`\n"
-        f"🖼 **图**: `{img_info}`\n"
-        f"{key_info}\n"
-        f"📡 **目标**: `{display_rtmp}`\n"
-        f"{mode_text}\n\n"
-        "⏳ 正在启动进程...", 
+    status_msg = await message.reply_text(
+        f"🚀 **正在启动进程...**\n\n"
+        f"📄 `{os.path.basename(src)}`\n"
+        f"🔑 `{current_key_name}`\n"
+        f"📡 `{display_rtmp}`\n"
+        f"🛠 `{mode_text}`", 
         parse_mode='Markdown'
     )
 
-    # 5. 执行 FFmpeg
-    headers_list = [
-        "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    ]
-    if alist_token and not is_local_file:
-        headers_list.append(f"Authorization: {alist_token}")
-        
-    headers_str = "".join([h + "\r\n" for h in headers_list])
-
-    cmd = [
-        "ffmpeg", 
-        "-y",
-        "-hide_banner",
-        "-threads", "4",  # 限制线程数，防止 Termux 过热
-    ]
+    # --- 构建命令 ---
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-threads", "4"]
     
-    if not is_local_file and not (is_slideshow or is_single_image):
-        cmd.extend([
-            "-headers", headers_str,
-            "-reconnect", "1", 
-            "-reconnect_at_eof", "1",
-            "-reconnect_streamed", "0",
-            "-reconnect_on_network_error", "1",
-            "-reconnect_on_http_error", "5xx",
-            "-reconnect_delay_max", "5",
-            "-rw_timeout", "15000000",
-        ])
+    # Alist Token Header
+    alist_token = config.get('alist_token', '')
+    if alist_token and not is_local_file:
+        cmd.extend(["-headers", f"Authorization: {alist_token}\r\nUser-Agent: TermuxBot\r\n"])
+    else:
+        cmd.extend(["-user_agent", "TermuxBot"])
 
-    cmd.extend(["-probesize", "10M", "-analyzeduration", "10M"])
+    # 网络优化参数
+    if not is_local_file:
+        cmd.extend([
+            "-reconnect", "1", "-reconnect_at_eof", "1", 
+            "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+            "-rw_timeout", "15000000", "-probesize", "10M", "-analyzeduration", "10M"
+        ])
 
     if is_slideshow:
-        # --- 多图轮播模式 ---
-        # 创建 concat 列表文件
+        # 多图轮播
         list_file = "slideshow_list.txt"
-        with open(list_file, "w") as f:
-            for img_path in background_image:
-                # 转义单引号
-                safe_path = img_path.replace("'", "'\\''")
-                f.write(f"file '{safe_path}'\n")
-                f.write(f"duration 5\n") # 每张图显示 5 秒
-        
-        # 为了防止 concat 最后一张图不循环，重复最后一张
-        if background_image:
-             safe_path = background_image[-1].replace("'", "'\\''")
-             f.write(f"file '{safe_path}'\n")
+        try:
+            with open(list_file, "w", encoding='utf-8') as f:
+                for img_path in background_image:
+                    # FFmpeg concat format requires specific escaping
+                    safe_path = img_path.replace("'", "'\\''")
+                    f.write(f"file '{safe_path}'\n")
+                    f.write(f"duration 10\n") # 每张图 10 秒
+                # Repeat last image
+                if background_image:
+                     safe_path = background_image[-1].replace("'", "'\\''")
+                     f.write(f"file '{safe_path}'\n")
+        except Exception as e:
+            await status_msg.edit_text(f"❌ 生成列表失败: {e}")
+            return
 
         cmd.extend([
-            "-re",                  
-            "-stream_loop", "-1",   # 输入流循环
-            "-f", "concat",
-            "-safe", "0",
-            "-i", list_file,        # Input 0: 图片列表
-            "-i", src,              # Input 1: 音频
-            
-            # 显式映射：确保视频取自输入0，音频取自输入1
-            "-map", "0:v:0",
-            "-map", "1:a:0",
-            
-            # 视频编码
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-tune", "zerolatency", # 降低延迟，避免缓冲
-            "-pix_fmt", "yuv420p",
-            # 720P 分辨率
-            "-vf", "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
-            "-g", "30",             # 关键帧间隔 2s (15fps * 2)
-            "-b:v", "1000k",        
-            "-r", "15",             # 提高到 15fps，满足 RTMP 最低标准
-            "-vsync", "cfr",        # 关键：强制输出固定帧率，防止直播断流
-            
-            # 音频编码
-            "-c:a", "aac", 
-            "-ar", "44100", 
-            "-b:a", "128k",
-            "-max_muxing_queue_size", "4096",
-            
-            "-shortest"             # 音频结束时停止
+            "-re", "-f", "concat", "-safe", "0", "-i", list_file, # Input 0 (Images)
+            "-i", src, # Input 1 (Audio)
+            "-map", "0:v:0", "-map", "1:a:0",
+            # Video encoding
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+            "-g", "30", "-r", "15", "-b:v", "1500k",
+            # Audio encoding
+            "-c:a", "aac", "-ar", "44100", "-b:a", "128k",
+            "-shortest" # Stop when audio ends
         ])
-    
+
     elif is_single_image:
-        # --- 单图模式 ---
+        # 单图
         cmd.extend([
-            "-loop", "1",           
-            "-framerate", "15",     # 提高输入帧率
-            "-i", background_image, # Input 0
-            "-re",                  
-            "-i", src,              # Input 1
-            
-            "-map", "0:v:0",
-            "-map", "1:a:0",
-            
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-tune", "stillimage",
-            "-pix_fmt", "yuv420p",
-            "-vf", "scale='min(720,iw)':-2,scale='trunc(iw/2)*2':'trunc(ih/2)*2'",
-            "-g", "30",             
-            "-b:v", "1000k",        
-            "-r", "15",             # 输出 15fps
-            "-vsync", "cfr",        # 强制固定帧率
-            
-            "-c:a", "aac", 
-            "-ar", "44100", 
-            "-b:a", "128k",
-            "-max_muxing_queue_size", "4096",
-            
-            "-shortest"             
-        ])
-    else:
-        # --- 纯视频模式 ---
-        cmd.extend([
-            "-re",
-            "-i", src, 
-            
-            "-c:v", "libx264", 
-            "-preset", "ultrafast", 
-            "-tune", "zerolatency", 
-            "-b:v", "2500k", "-maxrate", "3000k", "-bufsize", "6000k",
-            "-pix_fmt", "yuv420p",
-            "-g", "30",
-            
-            "-c:a", "aac", "-ar", "44100", "-b:a", "128k", 
+            "-loop", "1", "-framerate", "15", "-i", background_image, # Input 0
+            "-re", "-i", src, # Input 1
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+            "-vf", "scale='min(1280,iw)':-2,scale='trunc(iw/2)*2':'trunc(ih/2)*2',format=yuv420p",
+            "-g", "30", "-r", "15", "-b:v", "1500k",
+            "-c:a", "aac", "-b:a", "128k",
+            "-shortest"
         ])
 
-    # 输出通用参数
-    cmd.extend([
-        "-f", "flv", 
-        "-flvflags", "no_duration_filesize",
-        "-rw_timeout", "30000000", 
-        rtmp_url
-    ])
-    
+    else:
+        # 视频模式
+        cmd.extend([
+            "-re", "-i", src,
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-b:v", "2500k", "-maxrate", "3000k", "-bufsize", "6000k",
+            "-g", "60", "-c:a", "aac", "-b:a", "128k"
+        ])
+
+    # 输出
+    cmd.extend(["-f", "flv", "-flvflags", "no_duration_filesize", rtmp_url])
+
+    # --- 启动进程 ---
+    log_file = None
     try:
-        log_file = open(FFMPEG_LOG_FILE, "w")
+        log_file = open(FFMPEG_LOG_FILE, "w", encoding='utf-8')
         ffmpeg_process = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
         
-        await asyncio.sleep(2) 
+        # 等待初始化
+        await asyncio.sleep(3)
         
+        # 检查是否立即退出
         if ffmpeg_process.poll() is not None:
-             log_file.close()
-             
-             log_content = "无日志记录"
-             try:
-                 with open(FFMPEG_LOG_FILE, "r") as f:
-                     log_content = f.read()[-1000:]
-             except Exception as e:
-                 log_content = f"读取日志失败: {e}"
-
-             suggestion = ""
-             if "401 Unauthorized" in log_content:
-                 suggestion = "\n💡 **修复建议**：检测到 401 认证错误。请尝试在 [🗂 Alist 管理] -> [🔐 设置 Token] 中填入您的 Alist Token。"
-             elif "moov atom not found" in log_content:
-                 suggestion = "\n💡 **提示**：'moov atom not found' 通常表示文件索引在末尾。已开启 Seek 模式，如果仍失败，请检查源文件是否支持 Range 请求。"
-             elif "I/O error" in log_content:
-                 suggestion = "\n💡 **提示**：检测到 I/O 错误。可能是推流地址有误、网络不通，或 Termux 的 SSL 证书问题。"
-
-             await message.reply_text(
-                 f"❌ **推流启动失败** (进程意外退出)\n\n"
-                 f"🔍 **错误详情 (最后日志)**:\n"
-                 f"```\n{log_content}\n```"
-                 f"{suggestion}", 
-                 parse_mode='Markdown'
-             )
-             ffmpeg_process = None
+            # --- 失败处理 ---
+            log_file.close() # Close handle to read safely
+            log_file = None
+            
+            error_log = get_log_content(800)
+            
+            # 使用纯文本发送错误，防止 Markdown 解析崩溃
+            await status_msg.edit_text(f"❌ 推流启动失败 (Exit Code: {ffmpeg_process.poll()})")
+            await message.reply_text(f"🔍 错误日志:\n{error_log}") # parse_mode=None default
+            
+            ffmpeg_process = None
         else:
-             keyboard = InlineKeyboardMarkup([
-                 [InlineKeyboardButton("📜 查看实时日志", callback_data="btn_view_log")],
+            # --- 成功处理 ---
+            if log_file:
+                log_file.close() # Important: close file handle in parent process
+            
+            keyboard = InlineKeyboardMarkup([
+                 [InlineKeyboardButton("📜 实时日志", callback_data="btn_view_log")],
                  [InlineKeyboardButton("🛑 停止推流", callback_data="btn_stop_stream_quick")]
              ])
-             await message.reply_text(
-                 f"✅ **推流已稳定运行** (优化版)\n"
-                 f"PID: {ffmpeg_process.pid}\n\n"
-                 f"模式: {mode_text}\n"
-                 f"画面应在 5秒内出现。如果仍黑屏，请检查网络上传带宽。",
-                 reply_markup=keyboard,
-                 parse_mode='Markdown'
-             )
-             
+            
+            await status_msg.edit_text(
+                f"✅ **推流已稳定运行**\n"
+                f"PID: `{ffmpeg_process.pid}`\n"
+                f"模式: `{mode_text}`\n\n"
+                f"💡 画面约需 5-10秒 缓冲，请耐心等待。",
+                reply_markup=keyboard,
+                parse_mode='Markdown'
+            )
+
     except Exception as e:
-        await message.reply_text(f"❌ 启动异常: {e}")
+        if log_file:
+            log_file.close()
+        ffmpeg_process = None
+        await status_msg.edit_text(f"❌ 系统异常: {str(e)}")
