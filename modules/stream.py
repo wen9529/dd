@@ -115,18 +115,17 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         cmd.extend([
             "-reconnect", "1", "-reconnect_at_eof", "1", 
             "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-            "-rw_timeout", "15000000", "-probesize", "10M", "-analyzeduration", "10M"
+            # 增加 probesize 和 analyzeduration 防止分析流时超时
+            "-rw_timeout", "20000000", "-probesize", "50M", "-analyzeduration", "50M"
         ])
 
     if is_slideshow:
         # 多图轮播
         list_file = os.path.abspath("slideshow_list.txt")
         try:
-            # 修复：软件级循环。直接将列表重复写入，覆盖约 4 小时时长
-            # 规避 ffmpeg -stream_loop 在 concat 模式下失效的 bug
             target_duration = 14400 # 4小时
             img_count = len(background_image)
-            img_duration = 10 # 每张图10秒
+            img_duration = 10 
             
             total_cycle_time = img_count * img_duration
             loops_needed = int(target_duration / total_cycle_time) + 1
@@ -137,8 +136,6 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
                         safe_path = img_path.replace("'", "'\\''")
                         f.write(f"file '{safe_path}'\n")
                         f.write(f"duration {img_duration}\n")
-                
-                # Concat 格式要求：最后必须重复一次文件以确保最后一段时长生效
                 if background_image:
                      safe_path = background_image[-1].replace("'", "'\\''")
                      f.write(f"file '{safe_path}'\n")
@@ -148,22 +145,24 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             return
 
         cmd.extend([
-            # 1. 图片输入：移除 -stream_loop (已通过文件内容循环)
+            # 1. 图片输入
             "-f", "concat", "-safe", "0", "-i", list_file, 
             
-            # 2. 音频输入：-re 控制推流时钟
+            # 2. 音频输入：-re 限制速度
             "-re", "-i", src,
             
             "-map", "0:v:0", "-map", "1:a:0",
             
             # 3. 编码参数
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-            # 强制 fps=15, 强制格式
             "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=15,format=yuv420p",
             "-g", "30",
             "-b:v", "1000k", "-maxrate", "1500k", "-bufsize", "3000k",
             
-            "-c:a", "aac", "-ar", "44100", "-b:a", "128k",
+            # 音频参数：强制双声道 (关键修复) + 异步重采样
+            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
+            "-af", "aresample=async=1",
+            
             "-shortest", 
             "-max_muxing_queue_size", "4096"
         ])
@@ -171,17 +170,19 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     elif is_single_image:
         # 单图
         cmd.extend([
-            # 1. 图片输入：单图使用 -loop 1 是稳定的
             "-loop", "1", "-framerate", "15", "-i", background_image, 
             
-            # 2. 音频输入
             "-re", "-i", src,
             
             "-map", "0:v:0", "-map", "1:a:0",
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
             "-vf", "scale='min(1280,iw)':-2,scale='trunc(iw/2)*2':'trunc(ih/2)*2',fps=15,format=yuv420p",
             "-g", "30", "-b:v", "1000k", "-maxrate", "1500k", "-bufsize", "3000k",
-            "-c:a", "aac", "-b:a", "128k",
+            
+            # 音频参数：强制双声道 + 异步重采样
+            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
+            "-af", "aresample=async=1",
+            
             "-shortest"
         ])
 
@@ -191,11 +192,21 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             "-re", "-i", src,
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
             "-b:v", "2500k", "-maxrate", "3000k", "-bufsize", "6000k",
-            "-g", "60", "-c:a", "aac", "-b:a", "128k"
+            "-g", "60", 
+            # 关键：添加缩放滤镜，确保宽和高都是偶数，并强制像素格式
+            "-vf", "scale='trunc(iw/2)*2':'trunc(ih/2)*2',format=yuv420p",
+            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
+            "-af", "aresample=async=1"
         ])
 
     # 输出
-    cmd.extend(["-f", "flv", "-flvflags", "no_duration_filesize", rtmp_url])
+    cmd.extend([
+        "-f", "flv", 
+        "-flvflags", "no_duration_filesize", 
+        # 强制交错同步，防止音画分离导致服务器断开
+        "-max_interleave_delta", "0", 
+        rtmp_url
+    ])
 
     # --- 启动进程 ---
     log_file = None
