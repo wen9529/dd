@@ -25,10 +25,9 @@ def get_log_content(max_chars=1500):
     try:
          if os.path.exists(FFMPEG_LOG_FILE):
              with open(FFMPEG_LOG_FILE, "r", encoding='utf-8', errors='ignore') as f:
-                 # 读取最后的部分
                  f.seek(0, os.SEEK_END)
                  file_size = f.tell()
-                 seek_point = max(0, file_size - max_chars * 2) # 读取稍多一点以防 encoding 问题
+                 seek_point = max(0, file_size - max_chars * 2) 
                  f.seek(seek_point)
                  content = f.read()[-max_chars:]
          else:
@@ -44,7 +43,6 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     """执行推流逻辑"""
     global ffmpeg_process
     
-    # 尝试获取消息对象，优先使用 effective_message
     message = update.effective_message
     if not message and update.callback_query:
         message = update.callback_query.message
@@ -78,7 +76,6 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     is_local_file = os.path.exists(src)
     
     if not is_local_file and src.startswith("/"):
-        # Alist 路径处理
         encoded_src = quote(src, safe='/')
         src = f"http://127.0.0.1:5244{encoded_src}"
     
@@ -99,9 +96,8 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
 
     status_msg = None
     if message:
-        # 移除 Markdown 防止文件名包含特殊字符导致发送失败
         status_msg = await message.reply_text(
-            f"🚀 正在启动进程 (极速模式)...\n\n"
+            f"🚀 启动兼容模式 (240p/10fps)...\n\n"
             f"📄 {os.path.basename(src)}\n"
             f"🔑 {current_key_name}\n"
             f"📡 {display_rtmp}\n"
@@ -109,9 +105,9 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         )
 
     # --- 构建命令 ---
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-threads", "4"]
+    # 移除线程限制，让 FFmpeg 自动调度，提高编码效率
+    cmd = ["ffmpeg", "-y", "-hide_banner"]
     
-    # Alist / Network Headers
     if not is_local_file:
         alist_token = config.get('alist_token', '')
         if alist_token:
@@ -125,18 +121,21 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             "-rw_timeout", "20000000", "-probesize", "50M", "-analyzeduration", "50M"
         ])
 
-    # 定义极低性能参数 (240p @ 4fps) - 牺牲画质换取流畅不掉线
+    # --- 均衡性能参数 ---
+    # 分辨率: 426x240 (240p) - 既省资源又能看清
+    # 帧率: 10 fps - 足够静态图使用，也不会因帧率过低被服务器断开
+    # 音频: 44100Hz 双声道 - 恢复标准，解决无声问题
+    
     target_w, target_h = 426, 240
-    fps_val = "4"
-    gop_val = "8" # 2s
-    # 默认缩放滤镜 (如果有必要使用)
+    fps_val = "10"
+    gop_val = "20" # 2s at 10fps
     scale_filter_str = f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2"
 
     if is_slideshow:
         # 多图轮播
         list_file = os.path.abspath("slideshow_list.txt")
         try:
-            target_duration = 14400 # 4小时
+            target_duration = 14400 
             img_count = len(background_image)
             img_duration = 10 
             
@@ -152,28 +151,21 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
                 if background_image:
                      safe_path = background_image[-1].replace("'", "'\\''")
                      f.write(f"file '{safe_path}'\n")
-
         except Exception as e:
             if status_msg: await status_msg.edit_text(f"❌ 生成列表失败: {e}")
             return
 
         cmd.extend([
-            # 1. 图片输入
             "-f", "concat", "-safe", "0", "-i", list_file, 
-            
-            # 2. 音频输入
             "-re", "-i", src,
-            
             "-map", "0:v:0", "-map", "1:a:0",
-            
-            # 3. 编码参数
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
             "-vf", f"{scale_filter_str},fps={fps_val},format=yuv420p",
             "-g", gop_val, 
-            "-b:v", "200k", "-maxrate", "300k", "-bufsize", "600k", # 极低码率
+            "-b:v", "250k", "-maxrate", "350k", "-bufsize", "500k",
             
-            # 音频参数 (单声道)
-            "-c:a", "aac", "-ar", "44100", "-ac", "1", "-b:a", "96k",
+            # 恢复标准音频参数
+            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
             "-af", "aresample=async=1",
             
             "-shortest", 
@@ -181,13 +173,13 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         ])
 
     elif is_single_image:
-        # 单图模式 - 240p 极速优化版
+        # 单图模式
         temp_bg = "temp_bg_240p.jpg"
         final_bg = background_image
         pre_process_success = False
         
         try:
-            # 预处理：缩放并填充黑边
+            # 预处理
             subprocess.run([
                 "ffmpeg", "-y", "-i", background_image,
                 "-vf", scale_filter_str,
@@ -198,32 +190,23 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         except Exception as e:
             print(f"Image preprocess failed: {e}")
 
-        # 如果预处理成功，就不需要在 FFmpeg 循环中重复缩放，大幅节省 CPU
         if pre_process_success:
             vf_filter = "format=yuv420p"
         else:
             vf_filter = f"{scale_filter_str},format=yuv420p"
 
         cmd.extend([
-            # 输入部分
             "-loop", "1", "-framerate", fps_val, "-i", final_bg,
             "-re", "-i", src,
-            
-            # 映射
             "-map", "0:v:0", "-map", "1:a:0",
-            
-            # 视频编码
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-            
-            # 滤镜
             "-vf", vf_filter,
-            
             "-g", gop_val,
-            "-r", fps_val,        # 强制输出帧率
-            "-b:v", "200k", "-maxrate", "300k", "-bufsize", "600k", 
+            "-r", fps_val,
+            "-b:v", "200k", "-maxrate", "300k", "-bufsize", "600k",
             
-            # 音频编码 (单声道，降低 CPU 占用)
-            "-c:a", "aac", "-ar", "44100", "-ac", "1", "-b:a", "96k",
+            # 恢复标准音频参数
+            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
             "-af", "aresample=async=1",
             
             "-shortest",
@@ -231,19 +214,19 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         ])
 
     else:
-        # 视频模式 - 降低转码压力
+        # 视频模式
         cmd.extend([
             "-re", "-i", src,
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-            "-b:v", "1000k", "-maxrate", "1500k", "-bufsize", "2000k",
+            "-b:v", "800k", "-maxrate", "1200k", "-bufsize", "1500k",
             "-g", "60", 
-            # 限制最大宽度为 720p，防止 4K 视频直接转码卡死
-            "-vf", "scale='min(1280,iw)':'-2',format=yuv420p",
+            "-vf", "scale='min(854,iw)':'-2',format=yuv420p",
+            
+            # 恢复标准音频参数
             "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
             "-af", "aresample=async=1"
         ])
 
-    # 输出
     cmd.extend([
         "-f", "flv", 
         "-flvflags", "no_duration_filesize", 
@@ -251,29 +234,22 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         rtmp_url
     ])
 
-    # --- 启动进程 ---
     log_file = None
     try:
         log_file = open(FFMPEG_LOG_FILE, "w", encoding='utf-8')
         ffmpeg_process = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
-        
-        # 立即关闭父进程的文件句柄
         log_file.close()
         log_file = None 
         
-        # 等待初始化
-        await asyncio.sleep(3)
+        await asyncio.sleep(4)
         
-        # 检查是否立即退出
         if ffmpeg_process.poll() is not None:
-            # --- 失败处理 ---
             error_log = get_log_content(800)
             if status_msg:
                 await status_msg.edit_text(f"❌ 推流启动失败 (Exit Code: {ffmpeg_process.poll()})")
                 await message.reply_text(f"🔍 错误日志:\n{error_log}")
             ffmpeg_process = None
         else:
-            # --- 成功处理 ---
             keyboard = InlineKeyboardMarkup([
                  [InlineKeyboardButton("📜 实时日志", callback_data="btn_view_log")],
                  [InlineKeyboardButton("🛑 停止推流", callback_data="btn_stop_stream_quick")]
@@ -281,22 +257,18 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             
             if status_msg:
                 await status_msg.edit_text(
-                    f"✅ 推流已稳定运行\n"
+                    f"✅ 推流运行中\n"
                     f"PID: {ffmpeg_process.pid}\n"
                     f"模式: {mode_text}\n"
-                    f"分辨率: 240p (流畅模式)\n\n"
-                    f"💡 画面约需 5-10秒 缓冲，请耐心等待。",
+                    f"配置: 240p / 10fps / 标准音频\n\n"
+                    f"💡 已恢复音频标准，请检查声音。",
                     reply_markup=keyboard
                 )
 
     except Exception as e:
         if log_file:
-            try:
-                log_file.close()
-            except:
-                pass
+            try: log_file.close()
+            except: pass
         ffmpeg_process = None
-        if status_msg:
-            await status_msg.edit_text(f"❌ 系统异常: {str(e)}")
-        else:
-            await message.reply_text(f"❌ 系统异常: {str(e)}")
+        if status_msg: await status_msg.edit_text(f"❌ 系统异常: {str(e)}")
+        else: await message.reply_text(f"❌ 系统异常: {str(e)}")
