@@ -127,6 +127,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
                     safe_path = img_path.replace("'", "'\\''")
                     f.write(f"file '{safe_path}'\n")
                     f.write(f"duration 10\n")
+                # 即使循环，最后一张图也需要写入以防止读取错误，虽然 duration 在 concat 循环中主要看前面的
                 if background_image:
                      safe_path = background_image[-1].replace("'", "'\\''")
                      f.write(f"file '{safe_path}'\n")
@@ -135,14 +136,17 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             return
 
         cmd.extend([
+            "-stream_loop", "-1", # 关键修复：无限循环图片列表，直到音频结束
             "-f", "concat", "-safe", "0", "-i", list_file, # Input 0 (Images)
-            "-re", "-i", src, # Input 1 (Audio) - Apply -re here to throttle by audio duration
+            "-re", "-i", src, # Input 1 (Audio) - Throttled
             "-map", "0:v:0", "-map", "1:a:0",
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
             "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
             "-g", "30", "-r", "15", "-b:v", "1500k",
+            "-pix_fmt", "yuv420p", # 关键修复：强制像素格式，防止播放器黑屏
             "-c:a", "aac", "-ar", "44100", "-b:a", "128k",
-            "-shortest"
+            "-shortest", # 音频结束时停止推流
+            "-max_muxing_queue_size", "1024" # 防止音画处理速度不一致导致队列溢出
         ])
 
     elif is_single_image:
@@ -154,6 +158,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
             "-vf", "scale='min(1280,iw)':-2,scale='trunc(iw/2)*2':'trunc(ih/2)*2',format=yuv420p",
             "-g", "30", "-r", "15", "-b:v", "1500k",
+            "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "128k",
             "-shortest"
         ])
