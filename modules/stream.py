@@ -148,17 +148,17 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             # 1. 图片输入
             "-f", "concat", "-safe", "0", "-i", list_file, 
             
-            # 2. 音频输入：-re 限制速度
+            # 2. 音频输入
             "-re", "-i", src,
             
             "-map", "0:v:0", "-map", "1:a:0",
             
             # 3. 编码参数
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-            # 强制 720p 并使用黑边填充，保持宽高比，减少 CPU 压力
-            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=15,format=yuv420p",
-            "-g", "30",
-            "-b:v", "1000k", "-maxrate", "1500k", "-bufsize", "3000k",
+            # 降帧到 6fps 以降低负载
+            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=6,format=yuv420p",
+            "-g", "12", # GOP = 2s
+            "-b:v", "500k", "-maxrate", "800k", "-bufsize", "1500k",
             
             # 音频参数
             "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
@@ -169,19 +169,44 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         ])
 
     elif is_single_image:
-        # 单图
+        # 单图模式 - 终极优化
+        # 问题：直接缩放超大图片会导致 FPS 极低，引起 RTMP 断流。
+        # 解决：先用 ffmpeg 将图片预处理为 720p 的临时文件。
+        
+        temp_bg = "temp_bg_720p.jpg"
+        final_bg = background_image
+        try:
+            # 预处理：缩放并填充黑边到 1280x720
+            subprocess.run([
+                "ffmpeg", "-y", "-i", background_image,
+                "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2",
+                temp_bg
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            final_bg = temp_bg
+        except Exception as e:
+            print(f"Image preprocess failed: {e}")
+            # 失败则使用原图
+
         cmd.extend([
-            "-loop", "1", "-framerate", "15", "-i", background_image, 
-            
+            # 输入部分
+            "-loop", "1", "-framerate", "6", "-i", final_bg, # 6fps 足够静态图使用
             "-re", "-i", src,
             
+            # 映射
             "-map", "0:v:0", "-map", "1:a:0",
-            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-            # 统一使用 720p 填充算法，确保即使是 4K 图片也能流畅处理
-            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=15,format=yuv420p",
-            "-g", "30", "-b:v", "1000k", "-maxrate", "1500k", "-bufsize", "3000k",
             
-            # 音频参数
+            # 视频编码
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+            
+            # 滤镜：再次确保格式和尺寸（防止预处理失败的情况，或者处理 pixel format）
+            # 注意：如果预处理成功，这里的 scale 是极快的
+            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+            
+            "-g", "12",       # 关键帧间隔 2秒 (6fps * 2)
+            "-r", "6",        # 强制输出帧率
+            "-b:v", "400k", "-maxrate", "600k", "-bufsize", "1000k", # 降低码率
+            
+            # 音频编码
             "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
             "-af", "aresample=async=1",
             
@@ -194,9 +219,8 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         cmd.extend([
             "-re", "-i", src,
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-            "-b:v", "2500k", "-maxrate", "3000k", "-bufsize", "6000k",
+            "-b:v", "2000k", "-maxrate", "2500k", "-bufsize", "4000k",
             "-g", "60", 
-            # 视频模式下，仅强制偶数分辨率，不强制缩放，保留原画质
             "-vf", "scale='trunc(iw/2)*2':'trunc(ih/2)*2',format=yuv420p",
             "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
             "-af", "aresample=async=1"
@@ -206,7 +230,6 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     cmd.extend([
         "-f", "flv", 
         "-flvflags", "no_duration_filesize", 
-        # 强制交错同步，防止音画分离导致服务器断开
         "-max_interleave_delta", "0", 
         rtmp_url
     ])
