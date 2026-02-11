@@ -97,7 +97,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     status_msg = None
     if message:
         status_msg = await message.reply_text(
-            f"🚀 启动兼容模式 (240p/10fps)...\n\n"
+            f"🚀 启动稳定模式 (240p/15fps)...\n\n"
             f"📄 {os.path.basename(src)}\n"
             f"🔑 {current_key_name}\n"
             f"📡 {display_rtmp}\n"
@@ -105,9 +105,9 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         )
 
     # --- 构建命令 ---
-    # 移除线程限制，让 FFmpeg 自动调度，提高编码效率
     cmd = ["ffmpeg", "-y", "-hide_banner"]
     
+    # 网络优化参数
     if not is_local_file:
         alist_token = config.get('alist_token', '')
         if alist_token:
@@ -118,21 +118,39 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         cmd.extend([
             "-reconnect", "1", "-reconnect_at_eof", "1", 
             "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-            "-rw_timeout", "20000000", "-probesize", "50M", "-analyzeduration", "50M"
+            "-rw_timeout", "15000000", "-probesize", "50M", "-analyzeduration", "50M"
         ])
 
-    # --- 均衡性能参数 ---
-    # 分辨率: 426x240 (240p) - 既省资源又能看清
-    # 帧率: 10 fps - 足够静态图使用，也不会因帧率过低被服务器断开
-    # 音频: 44100Hz 双声道 - 恢复标准，解决无声问题
+    # --- 稳定模式参数 ---
+    # 分辨率: 426x240 (240p)
+    # 帧率: 15 fps (提高心跳频率，防止断连)
+    # 音频: 44100Hz 双声道 (标准)
+    # 关键点: -tune zerolatency (极低延迟，防止缓冲区堆积导致 I/O error)
     
     target_w, target_h = 426, 240
-    fps_val = "10"
-    gop_val = "20" # 2s at 10fps
+    fps_val = "15"
+    gop_val = "30" # 2s at 15fps
     scale_filter_str = f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2"
 
+    # 通用编码选项
+    x264_opts = [
+        "-c:v", "libx264", 
+        "-preset", "ultrafast", 
+        "-tune", "zerolatency", # 关键：零延迟模式
+        "-profile:v", "baseline", # 提高兼容性
+        "-level", "3.0"
+    ]
+
+    # 通用音频选项
+    audio_opts = [
+        "-c:a", "aac", 
+        "-ar", "44100", 
+        "-ac", "2", 
+        "-b:a", "128k",
+        "-af", "aresample=async=1000" # 稍微放宽同步容差
+    ]
+
     if is_slideshow:
-        # 多图轮播
         list_file = os.path.abspath("slideshow_list.txt")
         try:
             target_duration = 14400 
@@ -158,28 +176,24 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         cmd.extend([
             "-f", "concat", "-safe", "0", "-i", list_file, 
             "-re", "-i", src,
-            "-map", "0:v:0", "-map", "1:a:0",
-            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+            "-map", "0:v:0", "-map", "1:a:0"
+        ])
+        
+        cmd.extend(x264_opts)
+        cmd.extend([
             "-vf", f"{scale_filter_str},fps={fps_val},format=yuv420p",
             "-g", gop_val, 
-            "-b:v", "250k", "-maxrate", "350k", "-bufsize", "500k",
-            
-            # 恢复标准音频参数
-            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
-            "-af", "aresample=async=1",
-            
-            "-shortest", 
-            "-max_muxing_queue_size", "9999"
+            "-b:v", "300k", "-maxrate", "400k", "-bufsize", "600k",
         ])
+        cmd.extend(audio_opts)
+        cmd.extend(["-shortest", "-max_muxing_queue_size", "1024"])
 
     elif is_single_image:
-        # 单图模式
         temp_bg = "temp_bg_240p.jpg"
         final_bg = background_image
         pre_process_success = False
         
         try:
-            # 预处理
             subprocess.run([
                 "ffmpeg", "-y", "-i", background_image,
                 "-vf", scale_filter_str,
@@ -190,42 +204,36 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         except Exception as e:
             print(f"Image preprocess failed: {e}")
 
-        if pre_process_success:
-            vf_filter = "format=yuv420p"
-        else:
-            vf_filter = f"{scale_filter_str},format=yuv420p"
+        vf_filter = "format=yuv420p" if pre_process_success else f"{scale_filter_str},format=yuv420p"
 
         cmd.extend([
             "-loop", "1", "-framerate", fps_val, "-i", final_bg,
             "-re", "-i", src,
-            "-map", "0:v:0", "-map", "1:a:0",
-            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+            "-map", "0:v:0", "-map", "1:a:0"
+        ])
+        
+        cmd.extend(x264_opts)
+        cmd.extend([
             "-vf", vf_filter,
             "-g", gop_val,
             "-r", fps_val,
-            "-b:v", "200k", "-maxrate", "300k", "-bufsize", "600k",
-            
-            # 恢复标准音频参数
-            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
-            "-af", "aresample=async=1",
-            
-            "-shortest",
-            "-max_muxing_queue_size", "9999"
+            "-b:v", "250k", "-maxrate", "350k", "-bufsize", "500k",
         ])
+        cmd.extend(audio_opts)
+        cmd.extend(["-shortest", "-max_muxing_queue_size", "1024"])
 
     else:
         # 视频模式
         cmd.extend([
-            "-re", "-i", src,
-            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-re", "-i", src
+        ])
+        cmd.extend(x264_opts)
+        cmd.extend([
             "-b:v", "800k", "-maxrate", "1200k", "-bufsize", "1500k",
             "-g", "60", 
-            "-vf", "scale='min(854,iw)':'-2',format=yuv420p",
-            
-            # 恢复标准音频参数
-            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
-            "-af", "aresample=async=1"
+            "-vf", "scale='min(854,iw)':'-2',format=yuv420p"
         ])
+        cmd.extend(audio_opts)
 
     cmd.extend([
         "-f", "flv", 
@@ -260,8 +268,8 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
                     f"✅ 推流运行中\n"
                     f"PID: {ffmpeg_process.pid}\n"
                     f"模式: {mode_text}\n"
-                    f"配置: 240p / 10fps / 标准音频\n\n"
-                    f"💡 已恢复音频标准，请检查声音。",
+                    f"配置: 240p / 15fps (Zerolatency)\n\n"
+                    f"💡 已优化连接稳定性，请检查。",
                     reply_markup=keyboard
                 )
 
