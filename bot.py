@@ -71,7 +71,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("❌ 无权操作", show_alert=True)
         return
 
-    await query.answer()
+    # 先 answer，防止按钮转圈
+    try:
+        await query.answer()
+    except:
+        pass
+        
     data = query.data
 
     # --- 关闭/返回 ---
@@ -199,6 +204,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(selected_image_paths) == 1:
                 bg_arg = selected_image_paths[0]
 
+            await query.edit_message_text("🚀 正在请求推流进程...", parse_mode='Markdown')
             await run_ffmpeg_stream(update, audio_path, background_image=bg_arg)
             
             # 清理状态
@@ -207,7 +213,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         except Exception as e:
             logger.error(f"启动推流失败: {e}")
-            await query.answer(f"❌ 启动失败: {e}", show_alert=True)
+            try:
+                await query.edit_message_text(f"❌ 启动失败: {e}")
+            except:
+                pass
 
     # --- Alist 逻辑 ---
     elif data == "btn_alist_start":
