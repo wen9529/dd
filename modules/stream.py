@@ -104,15 +104,16 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     # --- 构建命令 ---
     cmd = ["ffmpeg", "-y", "-hide_banner", "-threads", "4"]
     
-    # Alist Token Header
-    alist_token = config.get('alist_token', '')
-    if alist_token and not is_local_file:
-        cmd.extend(["-headers", f"Authorization: {alist_token}\r\nUser-Agent: TermuxBot\r\n"])
-    else:
-        cmd.extend(["-user_agent", "TermuxBot"])
-
-    # 网络优化参数
+    # 修复: 仅当是网络流时才添加 User-Agent 或 Headers
+    # 本地文件添加 user_agent 会导致 Option not found 错误
     if not is_local_file:
+        alist_token = config.get('alist_token', '')
+        if alist_token:
+            cmd.extend(["-headers", f"Authorization: {alist_token}\r\nUser-Agent: TermuxBot\r\n"])
+        else:
+            cmd.extend(["-user_agent", "TermuxBot"])
+        
+        # 网络优化参数
         cmd.extend([
             "-reconnect", "1", "-reconnect_at_eof", "1", 
             "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
@@ -121,7 +122,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
 
     if is_slideshow:
         # 多图轮播
-        list_file = "slideshow_list.txt"
+        list_file = os.path.abspath("slideshow_list.txt") # 使用绝对路径更安全
         try:
             with open(list_file, "w", encoding='utf-8') as f:
                 for img_path in background_image:
