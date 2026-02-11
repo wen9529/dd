@@ -4,13 +4,15 @@ import subprocess
 import os
 import signal
 import sys
+from urllib.parse import quote
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 
 # --- 导入模块 ---
 from modules.config import load_config, save_config, is_owner, TOKEN, OWNER_ID, CONFIG_FILE
-from modules.utils import get_local_ip, get_all_ips, get_env_report, scan_local_videos, scan_local_audio, scan_local_images, format_size
-from modules.alist import get_alist_pid, fix_alist_config
+from modules.utils import get_local_ip, get_all_ips, get_env_report, scan_local_audio, scan_local_images, format_size
+from modules.alist import get_alist_pid, fix_alist_config, alist_list_files
+from modules.cloudflared import get_cloudflared_pid, start_cloudflared, stop_cloudflared
 from modules.stream import run_ffmpeg_stream, stop_ffmpeg_process, get_stream_status, get_log_content
 from modules.downloader import aria2_download_task
 from modules.keyboards import (
@@ -18,7 +20,9 @@ from modules.keyboards import (
     get_alist_keyboard, 
     get_settings_keyboard, 
     get_back_keyboard, 
-    get_keys_management_keyboard
+    get_keys_management_keyboard,
+    get_alist_browser_keyboard,
+    get_alist_file_actions_keyboard
 )
 
 # 配置日志
@@ -63,6 +67,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("🚫 **未授权访问**")
 
+# --- Alist 浏览逻辑核心 ---
+async def update_alist_browser(query, context, path):
+    """刷新文件浏览消息"""
+    success, items = alist_list_files(path)
+    
+    if not success:
+        await query.answer(f"❌ 读取失败: {items}", show_alert=True)
+        return
+
+    # 保存当前状态到 context
+    context.user_data['alist_path'] = path
+    context.user_data['alist_items'] = items # 缓存当前目录文件列表，以便通过索引查找
+    
+    # 排序并生成键盘
+    keyboard = get_alist_browser_keyboard(path, items)
+    
+    try:
+        await query.edit_message_text(
+            f"☁️ **云盘浏览**\n📂 路径: `{path}`",
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+    except Exception:
+        # 消息未变动时忽略错误
+        pass
+
 # --- 回调处理 (Inline Buttons) ---
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -85,6 +115,74 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.delete_message()
         return
 
+    # --- 1. Alist 浏览器导航 ---
+    elif data.startswith("alist_go:"):
+        try:
+            idx = int(data.split(":")[1])
+            items = context.user_data.get('alist_items', [])
+            current_path = context.user_data.get('alist_path', "/")
+            
+            if 0 <= idx < len(items):
+                target = items[idx]
+                if target['is_dir']:
+                    # 进入目录
+                    new_path = os.path.join(current_path, target['name']).replace("\\", "/")
+                    await update_alist_browser(query, context, new_path)
+                else:
+                    # 选中文件
+                    context.user_data['alist_selected_file'] = target
+                    context.user_data['alist_selected_path'] = os.path.join(current_path, target['name']).replace("\\", "/")
+                    
+                    size_str = format_size(target['size'])
+                    text = (
+                        f"📄 **文件操作**\n\n"
+                        f"文件名: `{target['name']}`\n"
+                        f"大小: {size_str}\n\n"
+                        "请选择操作："
+                    )
+                    await query.edit_message_text(text, reply_markup=get_alist_file_actions_keyboard(), parse_mode='Markdown')
+            else:
+                await query.answer("❌ 列表已过期，请刷新", show_alert=True)
+        except Exception as e:
+            logger.error(f"Browser error: {e}")
+            await query.answer("❌ 导航错误", show_alert=True)
+
+    elif data == "alist_up":
+        current_path = context.user_data.get('alist_path', "/")
+        if current_path != "/":
+            parent_path = os.path.dirname(current_path.rstrip("/"))
+            if not parent_path: parent_path = "/"
+            await update_alist_browser(query, context, parent_path)
+        else:
+            await query.answer("已经是根目录了", show_alert=True)
+
+    elif data == "alist_act_back":
+        # 返回当前目录列表
+        path = context.user_data.get('alist_path', "/")
+        await update_alist_browser(query, context, path)
+
+    elif data == "alist_act_stream":
+        # Alist 推流
+        file_path = context.user_data.get('alist_selected_path')
+        if not file_path:
+            await query.answer("❌ 文件信息丢失", show_alert=True)
+            return
+        
+        encoded_path = quote(file_path, safe='/')
+        
+        await query.edit_message_text("🚀 正在请求推流进程...", parse_mode='Markdown')
+        await run_ffmpeg_stream(update, file_path) 
+
+    elif data == "alist_act_download":
+        # Alist 下载
+        file_path = context.user_data.get('alist_selected_path')
+        if not file_path: return
+        encoded_path = quote(file_path, safe='/')
+        full_url = f"http://127.0.0.1:5244/d{encoded_path}"
+        
+        await query.edit_message_text("🚀 已添加到后台下载队列", parse_mode='Markdown')
+        asyncio.create_task(aria2_download_task(full_url, context, user_id))
+
     # --- 设置菜单 ---
     elif data == "btn_menu_settings":
         config = load_config()
@@ -105,27 +203,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- 返回音频列表 ---
     elif data == "btn_audio_stream":
-         # 复用音频扫描逻辑，稍微有点 hacky，但能减少代码重复
-         # 这里其实应该封装成独立函数，但为了保持逻辑连贯，我们在 callback 里直接处理
          await handle_audio_stream_logic(query, context)
-
-    # --- 链接推流逻辑 (从菜单触发后的返回) ---
-    elif data == "btn_start_stream":
-        # 这个其实用不到了，因为主菜单直接处理，但这保留作为"返回"的锚点
-        pass
-    
-    # --- 本地视频列表 (点击播放) ---
-    elif data.startswith("play_loc_"):
-        try:
-            idx = int(data.split("_")[-1])
-            videos = context.user_data.get('local_videos', [])
-            if 0 <= idx < len(videos):
-                target_video = videos[idx]
-                await run_ffmpeg_stream(update, target_video['path'])
-            else:
-                await query.answer("❌ 文件已不存在", show_alert=True)
-        except Exception as e:
-            await query.answer(f"❌ 错误: {e}", show_alert=True)
 
     # --- 音频选定 -> 选择图片 ---
     elif data.startswith("play_aud_"):
@@ -219,13 +297,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 pass
 
-    # --- Alist 逻辑 ---
+    # --- Alist & Tunnel 逻辑 ---
     elif data == "btn_alist_start":
         if not get_alist_pid():
              subprocess.Popen(["alist", "server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
              await asyncio.sleep(2)
         pid = get_alist_pid()
-        await query.edit_message_reply_markup(reply_markup=get_alist_keyboard(bool(pid)))
+        cft_pid = get_cloudflared_pid()
+        await query.edit_message_reply_markup(reply_markup=get_alist_keyboard(bool(pid), bool(cft_pid)))
         
     elif data == "btn_alist_stop":
         pid = get_alist_pid()
@@ -233,13 +312,51 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.kill(pid, signal.SIGTERM)
             await asyncio.sleep(1)
         pid = get_alist_pid()
-        await query.edit_message_reply_markup(reply_markup=get_alist_keyboard(bool(pid)))
+        cft_pid = get_cloudflared_pid()
+        await query.edit_message_reply_markup(reply_markup=get_alist_keyboard(bool(pid), bool(cft_pid)))
+
+    # Cloudflare Tunnel 控制
+    elif data == "btn_cft_token":
+        context.user_data['state'] = 'waiting_cft_token'
+        await query.message.reply_text(
+            "🚇 **配置 Cloudflare Tunnel**\n\n"
+            "请输入您的 Tunnel Token (通常以 `eyJh` 开头)。\n"
+            "您可以在 Cloudflare Zero Trust 面板创建 Tunnel 获取。\n\n"
+            "回复 `cancel` 取消。", 
+            reply_markup=get_back_keyboard("main")
+        )
+    
+    elif data == "btn_cft_toggle":
+        pid = get_cloudflared_pid()
+        if pid:
+            success, msg = stop_cloudflared()
+            await query.answer(f"🛑 {msg}")
+        else:
+            success, msg = start_cloudflared()
+            if not success:
+                await query.answer(f"❌ 启动失败: {msg}", show_alert=True)
+            else:
+                await query.answer("🚀 正在启动...", show_alert=False)
+                
+        await asyncio.sleep(2)
+        # 刷新状态
+        alist_pid = get_alist_pid()
+        cft_pid = get_cloudflared_pid()
+        await query.edit_message_reply_markup(reply_markup=get_alist_keyboard(bool(alist_pid), bool(cft_pid)))
         
     elif data == "btn_alist_info":
         local_ip = get_local_ip()
         all_ips = get_all_ips()
         ip_list_text = "\n".join([f"• `{ip}`" for ip in all_ips]) if all_ips else f"• `{local_ip}`"
-        await context.bot.send_message(chat_id=user_id, text=f"🌐 **Alist 访问地址**:\n\n📱 **本机**: `http://127.0.0.1:5244`\n\n📡 **局域网**:\n{ip_list_text}\n\n端口: `5244`", parse_mode='Markdown')
+        
+        cft_pid = get_cloudflared_pid()
+        tunnel_status = "🟢 运行中" if cft_pid else "⚪ 未运行"
+        
+        await context.bot.send_message(
+            chat_id=user_id, 
+            text=f"🌐 **Alist 访问地址**:\n\n📱 **本机**: `http://127.0.0.1:5244`\n\n📡 **局域网**:\n{ip_list_text}\n\n🚇 **内网穿透**: {tunnel_status}\n(请在 CF 面板查看公网域名)", 
+            parse_mode='Markdown'
+        )
         
     elif data == "btn_alist_admin":
         try:
@@ -258,7 +375,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data == "btn_alist_fix":
         log_msg, status, new_pid = await fix_alist_config()
-        await query.edit_message_text(f"🔧 **修复报告**\n\n{log_msg}\n结果: {status}", reply_markup=get_alist_keyboard(bool(new_pid)), parse_mode='Markdown')
+        cft_pid = get_cloudflared_pid()
+        await query.edit_message_text(f"🔧 **修复报告**\n\n{log_msg}\n结果: {status}", reply_markup=get_alist_keyboard(bool(new_pid), bool(cft_pid)), parse_mode='Markdown')
             
     # --- 密钥管理 ---
     elif data == "btn_manage_keys":
@@ -318,7 +436,6 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     
     # --- 全局菜单命令匹配 ---
-    # 只要匹配到菜单文字，优先执行菜单逻辑，并清除状态
     if text == "🛑 停止推流":
         context.user_data['state'] = None
         if stop_ffmpeg_process():
@@ -330,7 +447,6 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "📊 状态监控":
         context.user_data['state'] = None
         await update.message.reply_text(get_env_report(), parse_mode='Markdown')
-        # 如果正在推流，额外显示日志按钮
         if get_stream_status():
              keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📜 查看实时日志", callback_data="btn_view_log")]])
              await update.message.reply_text("💡 推流正在进行中...", reply_markup=keyboard)
@@ -362,8 +478,9 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "🗂 Alist":
         context.user_data['state'] = None
         pid = get_alist_pid()
+        cft_pid = get_cloudflared_pid()
         status_text = "✅ 运行中" if pid else "🔴 已停止"
-        await update.message.reply_text(f"🗂 **Alist 网盘管理**\n服务状态: {status_text}", reply_markup=get_alist_keyboard(bool(pid)), parse_mode='Markdown')
+        await update.message.reply_text(f"🗂 **Alist 网盘管理**\n服务状态: {status_text}", reply_markup=get_alist_keyboard(bool(pid), bool(cft_pid)), parse_mode='Markdown')
         return
 
     if text == "🔗 链接/Alist":
@@ -389,21 +506,28 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if text == "📺 本地视频":
+    # --- 新增：云盘浏览逻辑 (替代原本地视频) ---
+    if text == "☁️ 云盘浏览" or text == "📺 本地视频":
         context.user_data['state'] = None
-        await update.message.reply_text("🔍 正在扫描本地存储...", parse_mode='Markdown')
-        videos = scan_local_videos()
-        if not videos:
-            await update.message.reply_text("❌ **未找到视频文件**\n请检查 `/sdcard/Download` 目录。", parse_mode='Markdown')
+        
+        # 检查 Alist 是否存活
+        if not get_alist_pid():
+            await update.message.reply_text("⚠️ **Alist 未启动**\n无法浏览文件，请先启动 Alist。", reply_markup=get_alist_keyboard(False, False), parse_mode='Markdown')
             return
-        context.user_data['local_videos'] = videos
-        keyboard = []
-        for idx, v in enumerate(videos):
-            name = v['name']
-            if len(name) > 30: name = name[:28] + ".."
-            keyboard.append([InlineKeyboardButton(f"🎬 {name} ({format_size(v['size'])})", callback_data=f"play_loc_{idx}")])
-        keyboard.append([InlineKeyboardButton("❌ 关闭", callback_data="btn_close")])
-        await update.message.reply_text("📂 **本地视频库** (点击播放):", reply_markup=InlineKeyboardMarkup(keyboard))
+
+        await update.message.reply_text("🔍 正在连接 Alist...", parse_mode='Markdown')
+        
+        # 获取根目录
+        success, items = alist_list_files("/")
+        if not success:
+            await update.message.reply_text(f"❌ **连接失败**\n请检查 Alist Token 是否配置正确。\n错误: `{items}`", parse_mode='Markdown')
+            return
+            
+        context.user_data['alist_path'] = "/"
+        context.user_data['alist_items'] = items
+        
+        keyboard = get_alist_browser_keyboard("/", items)
+        await update.message.reply_text("☁️ **云盘浏览**\n📂 路径: `/`", reply_markup=keyboard, parse_mode='Markdown')
         return
 
     if text == "🎵 音频+图片":
@@ -475,8 +599,19 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
              return
         
         await update.message.reply_text("🚀 **任务已添加后台**\n正在使用 Aria2 下载，完成后会通知您...")
-        # 异步启动下载任务，不阻塞主线程
         asyncio.create_task(aria2_download_task(text, context, user_id))
+
+    # 8. Cloudflare Tunnel Token
+    elif state == 'waiting_cft_token':
+        if len(text) < 20:
+             await update.message.reply_text("⚠️ Token 似乎太短了，请检查是否完整复制。")
+             return
+        save_config({'cloudflared_token': text})
+        await update.message.reply_text(
+            "✅ **Tunnel Token 已保存**\n\n请点击 Alist 菜单中的 [🚇 启动穿透] 开启服务。", 
+            parse_mode='Markdown'
+        )
+        context.user_data['state'] = None
 
 
 async def handle_audio_stream_logic(query, context, message=None):

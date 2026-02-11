@@ -75,9 +75,12 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     src = raw_src.strip()
     is_local_file = os.path.exists(src)
     
-    if not is_local_file and src.startswith("/"):
+    # 智能判断 Alist 路径
+    if not is_local_file and not src.startswith("http") and not src.startswith("rtmp"):
+        # 假设是 Alist 路径，自动补全本地 API
+        # 注意：这里需要对路径进行 URL 编码
         encoded_src = quote(src, safe='/')
-        src = f"http://127.0.0.1:5244{encoded_src}"
+        src = f"http://127.0.0.1:5244/d{encoded_src}"
     
     # --- 模式判断 ---
     display_rtmp = rtmp_url[:20] + "..." + rtmp_url[-5:] if len(rtmp_url) > 30 else rtmp_url
@@ -92,13 +95,13 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     elif is_local_file:
         mode_text = "💿 本地视频"
     else:
-        mode_text = "🌐 网络流"
+        mode_text = "🌐 网络流/Alist"
 
     status_msg = None
     if message:
         status_msg = await message.reply_text(
             f"🚀 启动标准推流 (25fps/128k)...\n\n"
-            f"📄 {os.path.basename(src)}\n"
+            f"📄 {os.path.basename(raw_src)}\n"
             f"🔑 {current_key_name}\n"
             f"📡 {display_rtmp}\n"
             f"🛠 {mode_text}"

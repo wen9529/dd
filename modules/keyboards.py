@@ -1,14 +1,62 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+import os
 
 def get_main_menu_keyboard():
     """底部持久化主菜单 (Reply Keyboard)"""
     keyboard = [
-        [KeyboardButton("📺 本地视频"), KeyboardButton("📥 离线下载")], 
+        [KeyboardButton("☁️ 云盘浏览"), KeyboardButton("📥 离线下载")], 
         [KeyboardButton("🎵 音频+图片"), KeyboardButton("🔗 链接/Alist")],
         [KeyboardButton("🛑 停止推流"), KeyboardButton("⚙️ 设置"), KeyboardButton("🗂 Alist")],
         [KeyboardButton("📊 状态监控"), KeyboardButton("♻️ 重启机器人")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+def get_alist_browser_keyboard(current_path, items, page=0):
+    """
+    生成 Alist 文件浏览器键盘
+    current_path: 当前路径字符串
+    items: 文件对象列表
+    page: 分页页码 (暂留接口，目前简单的全部显示)
+    """
+    keyboard = []
+    
+    # 排序：文件夹在前，文件在后
+    items.sort(key=lambda x: (not x['is_dir'], x['name']))
+    
+    # 限制显示数量，防止按钮过多报错
+    MAX_ITEMS = 40
+    display_items = items[:MAX_ITEMS]
+    
+    for idx, item in enumerate(display_items):
+        name = item['name']
+        is_dir = item['is_dir']
+        
+        # 截断长文件名
+        if len(name) > 30: name = name[:28] + ".."
+        
+        icon = "📂" if is_dir else "📄"
+        # 使用索引作为 callback，避免路径过长导致 telegram 报错
+        callback = f"alist_go:{idx}"
+        
+        keyboard.append([InlineKeyboardButton(f"{icon} {name}", callback_data=callback)])
+    
+    # 导航栏
+    nav_row = []
+    if current_path != "/":
+        nav_row.append(InlineKeyboardButton("🔙 上一级", callback_data="alist_up"))
+    
+    nav_row.append(InlineKeyboardButton("❌ 关闭", callback_data="btn_close"))
+    keyboard.append(nav_row)
+    
+    return InlineKeyboardMarkup(keyboard)
+
+def get_alist_file_actions_keyboard():
+    """文件操作菜单"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📺 直播推流", callback_data="alist_act_stream")],
+        [InlineKeyboardButton("📥 离线下载", callback_data="alist_act_download")],
+        [InlineKeyboardButton("🔙 返回列表", callback_data="alist_act_back")]
+    ])
 
 # --- 以下保留 Inline 键盘用于子菜单和列表选择 ---
 
@@ -21,14 +69,21 @@ def get_settings_keyboard():
         [InlineKeyboardButton("❌ 关闭菜单", callback_data="btn_close")]
     ])
 
-def get_alist_keyboard(is_running):
-    """Alist 管理菜单 (Inline)"""
-    status_icon = "🟢" if is_running else "🔴"
-    action_text = "停止服务" if is_running else "启动服务"
-    action_callback = "btn_alist_stop" if is_running else "btn_alist_start"
+def get_alist_keyboard(alist_running, cft_running):
+    """Alist & 穿透 管理菜单 (Inline)"""
+    # Alist 状态行
+    a_icon = "🟢" if alist_running else "🔴"
+    a_text = "停止 Alist" if alist_running else "启动 Alist"
+    a_cb = "btn_alist_stop" if alist_running else "btn_alist_start"
     
+    # Tunnel 状态行
+    c_icon = "🟢" if cft_running else "⚪"
+    c_text = "停止穿透" if cft_running else "启动穿透"
+    c_cb = "btn_cft_toggle"
+
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"{status_icon} {action_text}", callback_data=action_callback)],
+        [InlineKeyboardButton(f"{a_icon} {a_text}", callback_data=a_cb)],
+        [InlineKeyboardButton(f"🚇 {c_icon} {c_text}", callback_data=c_cb), InlineKeyboardButton("🔑 设置穿透 Token", callback_data="btn_cft_token")],
         [InlineKeyboardButton("ℹ️ 获取访问地址", callback_data="btn_alist_info"), InlineKeyboardButton("👀 查看管理员账号", callback_data="btn_alist_admin")],
         [InlineKeyboardButton("📝 重置登录密码", callback_data="btn_alist_set_pwd"), InlineKeyboardButton("🔧 修复局域网访问", callback_data="btn_alist_fix")],
         [InlineKeyboardButton("❌ 关闭菜单", callback_data="btn_close")]

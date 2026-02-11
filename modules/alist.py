@@ -4,6 +4,8 @@ import os
 import signal
 import asyncio
 import json
+import requests
+from .config import load_config
 
 def get_alist_pid():
     """查找 alist 进程 PID"""
@@ -90,3 +92,39 @@ async def fix_alist_config():
     status = "✅ 重启成功" if new_pid else "❌ 重启失败"
     
     return log_msg, status, new_pid
+
+def alist_list_files(path="/", page=1, per_page=0):
+    """
+    调用 Alist API 获取文件列表
+    返回: (success, data_list/error_msg)
+    """
+    config = load_config()
+    token = config.get('alist_token', '')
+    base_url = "http://127.0.0.1:5244"
+    
+    api_url = f"{base_url}/api/fs/list"
+    headers = {
+        "User-Agent": "TermuxBot",
+        "Content-Type": "application/json"
+    }
+    if token:
+        headers["Authorization"] = token
+
+    payload = {
+        "path": path,
+        "password": "",
+        "page": page,
+        "per_page": per_page,
+        "refresh": False
+    }
+
+    try:
+        resp = requests.post(api_url, json=payload, headers=headers, timeout=5)
+        data = resp.json()
+        
+        if data.get("code") == 200:
+            return True, data.get("data", {}).get("content", [])
+        else:
+            return False, data.get("message", "Unknown API Error")
+    except Exception as e:
+        return False, str(e)

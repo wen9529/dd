@@ -55,6 +55,12 @@ echo -e "\n${BLUE}[3/6] 检查依赖...${NC}"
 # 安装基础工具和 SSL 库 (修复 Telegram 连接问题)
 pkg install termux-tools openssl-tool -y
 
+# 安装 TUR 源 (用于获取 cloudflared)
+if ! command -v cloudflared &> /dev/null; then
+    echo "  📦 添加 TUR 仓库..."
+    pkg install tur-repo -y
+fi
+
 if ! command -v ffmpeg &> /dev/null; then
     echo "  🎥 安装 FFmpeg..."
     pkg install ffmpeg -y
@@ -70,6 +76,10 @@ fi
 if ! command -v aria2c &> /dev/null; then
     echo "  ⬇️ 安装 Aria2 (离线下载)..."
     pkg install aria2 -y
+fi
+if ! command -v cloudflared &> /dev/null; then
+    echo "  🚇 安装 Cloudflared (内网穿透)..."
+    pkg install cloudflared -y
 fi
 
 echo "  🐍 安装 Python 依赖..."

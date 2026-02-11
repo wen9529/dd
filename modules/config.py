@@ -7,6 +7,8 @@ import sys
 # 请在此处填入您的 Token 和 ID，或者在 Web 界面/本地编辑器修改。
 TOKEN = "7565918204:AAH3E3Bb9Op7Xv-kezL6GISeJj8mA6Ycwug" 
 OWNER_ID = 1878794912
+# Cloudflare Tunnel Token
+CLOUDFLARED_TOKEN = "eyJhIjoiMjEyOGViYjhlN2Y2OTU4MjZkNzVmNjkwZTBhZTE4MjEiLCJ0IjoiYTE3OTBhNmMtMWQyZi00MDUzLTlkOTktOGMyZWUyZmJlNTczIiwicyI6Ik1UTXpaamhsT1RVdE1tTTJaaTAwWmpnMUxXSXlaakF0WldWa1lUVXhaR0V3TlRnMCJ9"
 
 CONFIG_FILE = "bot_config.json"
 FFMPEG_LOG_FILE = "ffmpeg.log"
@@ -69,7 +71,8 @@ def load_config():
         # 返回多密钥结构
         'stream_keys': config.get('stream_keys', []),
         'active_key_index': config.get('active_key_index', 0),
-        'alist_token': config.get('alist_token', '')
+        'alist_token': config.get('alist_token', ''),
+        'cloudflared_token': config.get('cloudflared_token', CLOUDFLARED_TOKEN)
     }
 
 def save_config(config_update):
