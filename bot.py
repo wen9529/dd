@@ -12,6 +12,7 @@ from modules.config import load_config, save_config, is_owner, TOKEN, OWNER_ID, 
 from modules.utils import get_local_ip, get_all_ips, get_env_report, scan_local_videos, scan_local_audio, scan_local_images, format_size
 from modules.alist import get_alist_pid, fix_alist_config
 from modules.stream import run_ffmpeg_stream, stop_ffmpeg_process, get_stream_status, get_log_content
+from modules.downloader import aria2_download_task
 from modules.keyboards import (
     get_main_menu_keyboard,
     get_alist_keyboard, 
@@ -376,6 +377,17 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
         return
+    
+    if text == "📥 离线下载":
+        context.user_data['state'] = 'waiting_download_link'
+        await update.message.reply_text(
+            "📥 **离线下载 (Aria2)**\n\n"
+            "请回复下载链接 (支持 HTTP/HTTPS/磁力链接)。\n"
+            "文件将保存到 `/sdcard/Download`。\n\n"
+            "回复 `cancel` 取消。",
+            parse_mode='Markdown'
+        )
+        return
 
     if text == "📺 本地视频":
         context.user_data['state'] = None
@@ -454,6 +466,17 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_config({'stream_keys': keys, 'active_key_index': len(keys) - 1})
         await update.message.reply_text(f"✅ **密钥已添加**: {name}", parse_mode='Markdown')
         context.user_data['state'] = None
+
+    # 7. 离线下载
+    elif state == 'waiting_download_link':
+        context.user_data['state'] = None
+        if not (text.startswith("http") or text.startswith("magnet")):
+             await update.message.reply_text("⚠️ 链接格式错误，仅支持 HTTP/HTTPS/Magnet")
+             return
+        
+        await update.message.reply_text("🚀 **任务已添加后台**\n正在使用 Aria2 下载，完成后会通知您...")
+        # 异步启动下载任务，不阻塞主线程
+        asyncio.create_task(aria2_download_task(text, context, user_id))
 
 
 async def handle_audio_stream_logic(query, context, message=None):

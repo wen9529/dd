@@ -67,6 +67,10 @@ if ! command -v node &> /dev/null; then
     echo "  📦 安装 Node.js (PM2 依赖)..."
     pkg install nodejs -y
 fi
+if ! command -v aria2c &> /dev/null; then
+    echo "  ⬇️ 安装 Aria2 (离线下载)..."
+    pkg install aria2 -y
+fi
 
 echo "  🐍 安装 Python 依赖..."
 pip install --upgrade pip > /dev/null 2>&1

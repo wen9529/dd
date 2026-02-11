@@ -3,7 +3,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMa
 def get_main_menu_keyboard():
     """底部持久化主菜单 (Reply Keyboard)"""
     keyboard = [
-        [KeyboardButton("📺 本地视频"), KeyboardButton("🎵 音频+图片"), KeyboardButton("🔗 链接/Alist")],
+        [KeyboardButton("📺 本地视频"), KeyboardButton("📥 离线下载")], 
+        [KeyboardButton("🎵 音频+图片"), KeyboardButton("🔗 链接/Alist")],
         [KeyboardButton("🛑 停止推流"), KeyboardButton("⚙️ 设置"), KeyboardButton("🗂 Alist")],
         [KeyboardButton("📊 状态监控"), KeyboardButton("♻️ 重启机器人")]
     ]
