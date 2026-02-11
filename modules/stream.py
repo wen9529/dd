@@ -122,31 +122,43 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         # 多图轮播
         list_file = os.path.abspath("slideshow_list.txt")
         try:
+            # 修复：软件级循环。直接将列表重复写入，覆盖约 4 小时时长
+            # 规避 ffmpeg -stream_loop 在 concat 模式下失效的 bug
+            target_duration = 14400 # 4小时
+            img_count = len(background_image)
+            img_duration = 10 # 每张图10秒
+            
+            total_cycle_time = img_count * img_duration
+            loops_needed = int(target_duration / total_cycle_time) + 1
+            
             with open(list_file, "w", encoding='utf-8') as f:
-                for img_path in background_image:
-                    safe_path = img_path.replace("'", "'\\''")
-                    f.write(f"file '{safe_path}'\n")
-                    f.write(f"duration 10\n")
+                for _ in range(loops_needed):
+                    for img_path in background_image:
+                        safe_path = img_path.replace("'", "'\\''")
+                        f.write(f"file '{safe_path}'\n")
+                        f.write(f"duration {img_duration}\n")
+                
+                # Concat 格式要求：最后必须重复一次文件以确保最后一段时长生效
                 if background_image:
                      safe_path = background_image[-1].replace("'", "'\\''")
                      f.write(f"file '{safe_path}'\n")
+
         except Exception as e:
             await status_msg.edit_text(f"❌ 生成列表失败: {e}")
             return
 
         cmd.extend([
-            # 1. 图片输入：无 -re，无限循环
-            "-stream_loop", "-1", 
+            # 1. 图片输入：移除 -stream_loop (已通过文件内容循环)
             "-f", "concat", "-safe", "0", "-i", list_file, 
             
-            # 2. 音频输入：-re 控制速度
+            # 2. 音频输入：-re 控制推流时钟
             "-re", "-i", src,
             
             "-map", "0:v:0", "-map", "1:a:0",
             
-            # 3. 编码参数：大幅降低码率，移除 stillimage，强制 fps
+            # 3. 编码参数
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-            # 关键：在滤镜中强制 fps=15 和 pixel format
+            # 强制 fps=15, 强制格式
             "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=15,format=yuv420p",
             "-g", "30",
             "-b:v", "1000k", "-maxrate", "1500k", "-bufsize", "3000k",
@@ -159,10 +171,10 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     elif is_single_image:
         # 单图
         cmd.extend([
-            # 1. 图片输入：移除 -re
+            # 1. 图片输入：单图使用 -loop 1 是稳定的
             "-loop", "1", "-framerate", "15", "-i", background_image, 
             
-            # 2. 音频输入：添加 -re
+            # 2. 音频输入
             "-re", "-i", src,
             
             "-map", "0:v:0", "-map", "1:a:0",
@@ -174,7 +186,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         ])
 
     else:
-        # 视频模式 (保持原样)
+        # 视频模式
         cmd.extend([
             "-re", "-i", src,
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
