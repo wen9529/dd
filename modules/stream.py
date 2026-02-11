@@ -119,6 +119,12 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             "-rw_timeout", "20000000", "-probesize", "50M", "-analyzeduration", "50M"
         ])
 
+    # 定义通用低性能参数 (360p @ 2fps)
+    target_w, target_h = 640, 360
+    fps_val = "2"
+    gop_val = "4" # 2s
+    scale_filter_str = f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2"
+
     if is_slideshow:
         # 多图轮播
         list_file = os.path.abspath("slideshow_list.txt")
@@ -155,10 +161,9 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             
             # 3. 编码参数
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-            # 降帧到 6fps 以降低负载
-            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=6,format=yuv420p",
-            "-g", "12", # GOP = 2s
-            "-b:v", "500k", "-maxrate", "800k", "-bufsize", "1500k",
+            "-vf", f"{scale_filter_str},fps={fps_val},format=yuv420p",
+            "-g", gop_val, 
+            "-b:v", "300k", "-maxrate", "500k", "-bufsize", "1000k",
             
             # 音频参数
             "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
@@ -169,27 +174,23 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         ])
 
     elif is_single_image:
-        # 单图模式 - 终极优化
-        # 问题：直接缩放超大图片会导致 FPS 极低，引起 RTMP 断流。
-        # 解决：先用 ffmpeg 将图片预处理为 720p 的临时文件。
-        
-        temp_bg = "temp_bg_720p.jpg"
+        # 单图模式 - 360p 极速优化版
+        temp_bg = "temp_bg_360p.jpg"
         final_bg = background_image
         try:
-            # 预处理：缩放并填充黑边到 1280x720
+            # 预处理：缩放并填充黑边
             subprocess.run([
                 "ffmpeg", "-y", "-i", background_image,
-                "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2",
+                "-vf", scale_filter_str,
                 temp_bg
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             final_bg = temp_bg
         except Exception as e:
             print(f"Image preprocess failed: {e}")
-            # 失败则使用原图
 
         cmd.extend([
             # 输入部分
-            "-loop", "1", "-framerate", "6", "-i", final_bg, # 6fps 足够静态图使用
+            "-loop", "1", "-framerate", fps_val, "-i", final_bg,
             "-re", "-i", src,
             
             # 映射
@@ -198,13 +199,12 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             # 视频编码
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
             
-            # 滤镜：再次确保格式和尺寸（防止预处理失败的情况，或者处理 pixel format）
-            # 注意：如果预处理成功，这里的 scale 是极快的
-            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+            # 滤镜：再次确保格式和尺寸
+            "-vf", f"{scale_filter_str},format=yuv420p",
             
-            "-g", "12",       # 关键帧间隔 2秒 (6fps * 2)
-            "-r", "6",        # 强制输出帧率
-            "-b:v", "400k", "-maxrate", "600k", "-bufsize", "1000k", # 降低码率
+            "-g", gop_val,
+            "-r", fps_val,        # 强制输出帧率
+            "-b:v", "300k", "-maxrate", "500k", "-bufsize", "1000k", # 极低码率
             
             # 音频编码
             "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
@@ -215,11 +215,12 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         ])
 
     else:
-        # 视频模式
+        # 视频模式 - 使用 copy 模式如果可能，或者转码
+        # 为了兼容性，这里暂时保持转码，但降低参数
         cmd.extend([
             "-re", "-i", src,
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-            "-b:v", "2000k", "-maxrate", "2500k", "-bufsize", "4000k",
+            "-b:v", "1500k", "-maxrate", "2000k", "-bufsize", "3000k",
             "-g", "60", 
             "-vf", "scale='trunc(iw/2)*2':'trunc(ih/2)*2',format=yuv420p",
             "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
