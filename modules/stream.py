@@ -92,12 +92,12 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     elif is_local_file:
         mode_text = "💿 本地视频"
     else:
-        mode_text = "🌐 网络/Alist"
+        mode_text = "🌐 网络流"
 
     status_msg = None
     if message:
         status_msg = await message.reply_text(
-            f"🚀 启动稳定模式 (CBR/20fps)...\n\n"
+            f"🚀 启动标准推流 (25fps/128k)...\n\n"
             f"📄 {os.path.basename(src)}\n"
             f"🔑 {current_key_name}\n"
             f"📡 {display_rtmp}\n"
@@ -105,10 +105,15 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         )
 
     # --- 构建命令 ---
+    # 基础命令，-y 覆盖输出，-hide_banner 减少日志
     cmd = ["ffmpeg", "-y", "-hide_banner"]
     
-    # 网络优化参数 - 增加初始连接超时
-    if not is_local_file:
+    # 核心差异：本地文件必须用 -re (实时读取)，网络流不需要 (或者依赖 reconnect)
+    if is_local_file:
+        cmd.append("-re")
+    else:
+        # 仅针对网络流添加重连参数
+        # 对本地文件加这些会导致 "Protocol not found" 或 IO 错误
         alist_token = config.get('alist_token', '')
         if alist_token:
             cmd.extend(["-headers", f"Authorization: {alist_token}\r\nUser-Agent: TermuxBot\r\n"])
@@ -117,47 +122,20 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         
         cmd.extend([
             "-reconnect", "1", "-reconnect_at_eof", "1", 
-            "-reconnect_streamed", "1", "-reconnect_delay_max", "10",
-            "-rw_timeout", "20000000", "-probesize", "50M", "-analyzeduration", "50M"
+            "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+            "-rw_timeout", "15000000"
         ])
 
-    # --- 稳定模式核心参数 ---
-    # 分辨率: 426x240 (240p)
-    # 帧率: 20 fps (标准流畅度，减少超时)
-    # GOP: 40 (严格 2秒)
-    
-    target_w, target_h = 426, 240
-    fps_val = "20"
-    gop_val = "40" # 2s at 20fps
-    scale_filter_str = f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2"
-
-    # 通用编码选项 (Strict CBR)
-    x264_opts = [
-        "-c:v", "libx264", 
-        "-preset", "veryfast", # 稍微提高压缩效率，节省带宽
-        "-tune", "zerolatency", 
-        "-profile:v", "baseline",
-        "-level", "3.0",
-        "-sc_threshold", "0" # 关键：禁止场景切换插入关键帧，强制严格 GOP
-    ]
-
-    # 通用音频选项 (Lower Bitrate)
-    audio_opts = [
-        "-c:a", "aac", 
-        "-ar", "44100", 
-        "-ac", "2", 
-        "-b:a", "64k" # 降低音频码率，减轻 Broken Pipe 概率
-    ]
+    # --- 场景分歧 ---
 
     if is_slideshow:
+        # === 轮播模式 ===
+        # 这种模式最容易出问题，我们使用最标准的 concat 协议
         list_file = os.path.abspath("slideshow_list.txt")
         try:
-            target_duration = 14400 
-            img_count = len(background_image)
+            target_duration = 20000 # 足够长即可
             img_duration = 10 
-            
-            total_cycle_time = img_count * img_duration
-            loops_needed = int(target_duration / total_cycle_time) + 1
+            loops_needed = int(target_duration / (len(background_image) * img_duration)) + 1
             
             with open(list_file, "w", encoding='utf-8') as f:
                 for _ in range(loops_needed):
@@ -165,82 +143,79 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
                         safe_path = img_path.replace("'", "'\\''")
                         f.write(f"file '{safe_path}'\n")
                         f.write(f"duration {img_duration}\n")
+                # 必须重复最后一张图确保不会黑屏
                 if background_image:
                      safe_path = background_image[-1].replace("'", "'\\''")
                      f.write(f"file '{safe_path}'\n")
         except Exception as e:
-            if status_msg: await status_msg.edit_text(f"❌ 生成列表失败: {e}")
+            if status_msg: await status_msg.edit_text(f"❌ 列表生成失败: {e}")
             return
 
         cmd.extend([
-            "-f", "concat", "-safe", "0", "-i", list_file, 
-            "-re", "-i", src,
-            "-map", "0:v:0", "-map", "1:a:0"
+            "-f", "concat", "-safe", "0", "-i", list_file, # 输入0: 视频/图片流
+            "-i", src,                                     # 输入1: 音频流
+            
+            # 视频编码
+            "-map", "0:v:0",
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+            "-pix_fmt", "yuv420p",
+            "-vf", "scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2,fps=25", # 480p, 25fps 标准
+            "-g", "50", # 2秒一个关键帧 (25fps * 2)
+            "-b:v", "500k", "-maxrate", "800k", "-bufsize", "1000k",
+
+            # 音频编码 (标准参数)
+            "-map", "1:a:0",
+            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
+            
+            "-shortest" # 音频结束即停止
         ])
-        
-        cmd.extend(x264_opts)
-        cmd.extend([
-            "-vf", f"{scale_filter_str},fps={fps_val},format=yuv420p",
-            "-g", gop_val, 
-            # 强制 CBR
-            "-b:v", "400k", "-minrate", "400k", "-maxrate", "400k", "-bufsize", "800k",
-        ])
-        cmd.extend(audio_opts)
-        cmd.extend(["-shortest", "-max_muxing_queue_size", "2048"])
 
     elif is_single_image:
-        temp_bg = "temp_bg_240p.jpg"
-        final_bg = background_image
-        pre_process_success = False
-        
-        try:
-            subprocess.run([
-                "ffmpeg", "-y", "-i", background_image,
-                "-vf", scale_filter_str,
-                temp_bg
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            final_bg = temp_bg
-            pre_process_success = True
-        except Exception as e:
-            print(f"Image preprocess failed: {e}")
-
-        vf_filter = "format=yuv420p" if pre_process_success else f"{scale_filter_str},format=yuv420p"
-
+        # === 单图模式 ===
+        # 使用 -loop 1 是最稳的单图推流方式
         cmd.extend([
-            "-loop", "1", "-framerate", fps_val, "-i", final_bg,
-            "-re", "-i", src,
-            "-map", "0:v:0", "-map", "1:a:0"
+            "-loop", "1", "-framerate", "25", "-i", background_image, # 输入0: 循环图片
+            "-i", src,                                                # 输入1: 音频流
+            
+            # 视频编码
+            "-map", "0:v:0",
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+            "-pix_fmt", "yuv420p",
+            "-vf", "scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+            "-g", "50",
+            "-b:v", "400k", "-maxrate", "600k", "-bufsize", "800k",
+
+            # 音频编码
+            "-map", "1:a:0",
+            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
+            
+            "-shortest"
         ])
-        
-        cmd.extend(x264_opts)
-        cmd.extend([
-            "-vf", vf_filter,
-            "-g", gop_val,
-            "-r", fps_val,
-            # 强制 CBR
-            "-b:v", "350k", "-minrate", "350k", "-maxrate", "350k", "-bufsize", "700k",
-        ])
-        cmd.extend(audio_opts)
-        cmd.extend(["-shortest", "-max_muxing_queue_size", "2048"])
 
     else:
-        # 视频模式
+        # === 纯视频模式 (本地或网络) ===
+        cmd.append("-i")
+        cmd.append(src)
+        
+        # 视频参数
+        # 移除 zerolatency，因为它会禁用缓冲区，导致本地文件读取卡顿
         cmd.extend([
-            "-re", "-i", src
+            "-c:v", "libx264", "-preset", "veryfast",
+            "-vf", "scale='min(854,iw)':'-2',format=yuv420p", # 保持比例缩放，不强制拉伸
+            "-g", "60", # 30fps * 2s
+            "-b:v", "1500k", "-maxrate", "2000k", "-bufsize", "3000k"
         ])
-        cmd.extend(x264_opts)
+        
+        # 音频参数
+        # 强制转码 AAC，防止源音频格式 (如 flac/opus) 不被 RTMP 支持
         cmd.extend([
-            # 强制 CBR (视频模式稍高一点)
-            "-b:v", "600k", "-minrate", "600k", "-maxrate", "600k", "-bufsize", "1200k",
-            "-g", "60", # 3s GOP for video
-            "-vf", "scale='min(854,iw)':'-2',format=yuv420p"
+            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k"
         ])
-        cmd.extend(audio_opts)
 
+    # --- 输出部分 ---
     cmd.extend([
         "-f", "flv", 
         "-flvflags", "no_duration_filesize", 
-        "-max_interleave_delta", "0", 
         rtmp_url
     ])
 
@@ -270,8 +245,8 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
                     f"✅ 推流运行中\n"
                     f"PID: {ffmpeg_process.pid}\n"
                     f"模式: {mode_text}\n"
-                    f"配置: 240p / 20fps / CBR模式\n\n"
-                    f"💡 启用了严格恒定码率以防止断流。",
+                    f"配置: 480p / 25fps / 128k音频\n\n"
+                    f"💡 已恢复标准配置。",
                     reply_markup=keyboard
                 )
 
