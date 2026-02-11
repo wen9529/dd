@@ -79,16 +79,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     
     elif data == "btn_local_stream":
-        await query.edit_message_text("🔍 正在扫描本地视频文件...", parse_mode='Markdown')
+        await query.edit_message_text("🔍 正在深度扫描本地视频...", parse_mode='Markdown')
         videos = scan_local_videos()
         
         if not videos:
             await query.edit_message_text(
                 "❌ **未找到视频文件**\n\n"
-                "已扫描: `Download`, `Movies`, `DCIM`, `Pictures` 及 Termux 存储。\n\n"
+                "已深度扫描: `Download`, `Movies` 等目录及其子文件夹。\n\n"
                 "💡 **解决办法**:\n"
-                "1. 请确认手机中有 `.mp4` 或 `.mkv` 文件。\n"
-                "2. 若从未授权，请在 Termux 运行 `termux-setup-storage` 并点击允许。",
+                "1. 确认文件后缀为 `.mp4`, `.mkv` 等。\n"
+                "2. 尝试将文件移动到 `/sdcard/Download` 根目录。\n"
+                "3. 再次运行 `termux-setup-storage` 刷新权限。",
                 reply_markup=get_back_keyboard(),
                 parse_mode='Markdown'
             )
@@ -103,23 +104,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("🔙 返回主菜单", callback_data="btn_back_main")])
         
         await query.edit_message_text(
-            "📂 **本地视频列表** (最新的20个):\n点击即可开始推流。",
+            "📂 **本地视频列表** (最新的30个):\n点击即可开始推流。",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
     
     # --- 音频推流流程 ---
     elif data == "btn_audio_stream":
-        await query.edit_message_text("🔍 正在扫描本地音频文件...", parse_mode='Markdown')
+        await query.edit_message_text("🔍 正在深度扫描本地音频...", parse_mode='Markdown')
         audios = scan_local_audio()
         
         if not audios:
              await query.edit_message_text(
                 "❌ **未找到音频文件**\n\n"
-                "已扫描: `Music`, `Download` 及 Termux 存储。\n\n"
+                "已深度扫描: `Music`, `Download` 等目录及其子文件夹。\n\n"
                 "💡 **解决办法**:\n"
-                "1. 请确认手机中有 `.mp3` 或 `.flac` 文件。\n"
-                "2. 若从未授权，请在 Termux 运行 `termux-setup-storage` 并点击允许。",
+                "1. 确认文件后缀为 `.mp3`, `.flac` 等。\n"
+                "2. 尝试将文件移动到 `/sdcard/Download` 根目录。\n"
+                "3. 再次运行 `termux-setup-storage` 刷新权限。",
                 reply_markup=get_back_keyboard(),
                 parse_mode='Markdown'
             )
@@ -157,7 +159,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
              context.user_data['selected_img_indices'] = set() # 初始化选择集合
              
              if not images:
-                 # 无图片，提示用户但允许继续(暂不支持无图模式，这里强制提示)
+                 # 无图片
                  await query.answer("⚠️ 未找到图片 (jpg/png)，请在 Pictures 或 Download 放入图片", show_alert=True)
                  return
              

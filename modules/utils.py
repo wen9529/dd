@@ -57,55 +57,80 @@ def format_size(size):
     return f"{size:.1f}TB"
 
 def _scan_files(extensions, extra_paths=[]):
-    """通用的文件扫描函数 (增强版)"""
+    """通用的文件扫描函数 (增强版 - 支持中文路径与更多目录)"""
     home = os.path.expanduser("~")
     
-    # 扩展搜索路径，包含硬编码路径和 Termux storage 映射路径
+    # 扩展搜索路径
     search_paths = [
-        # 标准 Android 路径
+        # 1. 常见 App 音乐目录 (针对国产软件优化)
+        "/sdcard/netease/cloudmusic/Music",  # 网易云
+        "/sdcard/qqmusic/song",              # QQ音乐
+        "/sdcard/kgmusic/download",          # 酷狗
+        "/sdcard/kuwo/music",                # 酷我
+
+        # 2. 标准 Android 路径
+        "/sdcard/Music",
         "/sdcard/Download",
         "/sdcard/Movies",
-        "/sdcard/Music",
         "/sdcard/Pictures",
         "/sdcard/DCIM",
-        "/sdcard/Telegram",  # Telegram 下载目录
-        "/sdcard/WeiXin",    # 微信保存目录 (通常在 WeiXin 或 Tencent/MicroMsg/WeiXin)
-        "/sdcard",           # 根目录 (以防用户直接放根目录)
+        "/sdcard/Telegram",
+        "/sdcard/WeiXin",
+        "/sdcard/Tencent/QQfile_recv",
         
-        # Termux 映射路径 (更可靠)
-        os.path.join(home, "storage", "downloads"),
-        os.path.join(home, "storage", "movies"),
-        os.path.join(home, "storage", "music"),
-        os.path.join(home, "storage", "pictures"),
-        os.path.join(home, "storage", "dcim"),
+        # 3. 根目录 (用于捕获 /sdcard/我的音乐 这种自定义文件夹)
+        "/sdcard",
+
+        # 4. Termux 映射路径 (包含外部 SD 卡)
         os.path.join(home, "storage", "shared"),
+        os.path.join(home, "storage", "music"),
+        os.path.join(home, "storage", "downloads"),
+        os.path.join(home, "storage", "external-1"), # 外部 SD 卡
         
-        # 当前目录
+        # 5. 机器人当前目录
         os.getcwd()
     ] + extra_paths
     
     found_files = []
     seen_paths = set() # 用于去重
 
-    for path in search_paths:
-        if not os.path.exists(path):
+    # 需要排除的系统目录，防止扫描耗时过长或无权限
+    exclude_dirs = {'Android', 'LOST.DIR', 'System Volume Information', 'MIUI', 'data', 'obb'}
+
+    for base_path in search_paths:
+        if not os.path.exists(base_path):
             continue
             
+        # 计算基础路径的深度，用于控制递归层级
+        base_depth = base_path.rstrip(os.sep).count(os.sep)
+
         try:
-            with os.scandir(path) as it:
-                for entry in it:
-                    if entry.is_file() and entry.name.lower().endswith(extensions):
+            # 使用 os.walk 进行递归扫描
+            for root, dirs, files in os.walk(base_path, topdown=True):
+                # 过滤目录：排除隐藏目录和系统目录
+                dirs[:] = [d for d in dirs if not d.startswith('.') and d not in exclude_dirs]
+                
+                # 深度控制：超过 3 层子目录停止递归 (防止扫描太深)
+                current_depth = root.rstrip(os.sep).count(os.sep)
+                if current_depth - base_depth > 3:
+                    dirs[:] = [] 
+                    continue
+
+                for name in files:
+                    if name.lower().endswith(extensions):
                         try:
-                            # 获取真实路径以去重 (解决软链接重复问题)
-                            real_path = os.path.realpath(entry.path)
+                            # 获取真实路径
+                            full_path = os.path.join(root, name)
+                            real_path = os.path.realpath(full_path)
+                            
                             if real_path in seen_paths:
                                 continue
                             
                             seen_paths.add(real_path)
                             
-                            stat = entry.stat()
+                            stat = os.stat(real_path)
                             found_files.append({
-                                "name": entry.name,
+                                "name": name,
                                 "path": real_path,
                                 "mtime": stat.st_mtime,
                                 "size": stat.st_size
@@ -113,14 +138,13 @@ def _scan_files(extensions, extra_paths=[]):
                         except Exception:
                             continue
         except PermissionError:
-            # 静默跳过无权限目录
             continue
         except Exception:
             pass
     
     # 按修改时间倒序
     found_files.sort(key=lambda x: x['mtime'], reverse=True)
-    return found_files[:20] # 返回最新的20个
+    return found_files[:30] # 返回最新的30个文件
 
 def scan_local_videos():
     return _scan_files(('.mp4', '.mkv', '.avi', '.flv', '.mov', '.ts', '.webm'))
