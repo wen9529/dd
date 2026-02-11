@@ -135,21 +135,21 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             return
 
         cmd.extend([
-            # 1. 图片输入：移除 -re，添加无限循环
+            # 1. 图片输入：无 -re，无限循环
             "-stream_loop", "-1", 
             "-f", "concat", "-safe", "0", "-i", list_file, 
             
-            # 2. 音频输入：添加 -re 以控制整体推流速度 (Clock Master)
+            # 2. 音频输入：-re 控制速度
             "-re", "-i", src,
             
             "-map", "0:v:0", "-map", "1:a:0",
             
-            # 3. 编码参数：使用 ultrafast 降低 CPU 占用，确保不卡顿
-            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
-            "-g", "30", "-r", "15", 
-            "-b:v", "1500k", "-maxrate", "2000k", "-bufsize", "4000k",
-            "-pix_fmt", "yuv420p",
+            # 3. 编码参数：大幅降低码率，移除 stillimage，强制 fps
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            # 关键：在滤镜中强制 fps=15 和 pixel format
+            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=15,format=yuv420p",
+            "-g", "30",
+            "-b:v", "1000k", "-maxrate", "1500k", "-bufsize", "3000k",
             
             "-c:a", "aac", "-ar", "44100", "-b:a", "128k",
             "-shortest", 
@@ -166,16 +166,15 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             "-re", "-i", src,
             
             "-map", "0:v:0", "-map", "1:a:0",
-            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-            "-vf", "scale='min(1280,iw)':-2,scale='trunc(iw/2)*2':'trunc(ih/2)*2',format=yuv420p",
-            "-g", "30", "-r", "15", "-b:v", "1500k", "-maxrate", "2000k", "-bufsize", "4000k",
-            "-pix_fmt", "yuv420p",
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-vf", "scale='min(1280,iw)':-2,scale='trunc(iw/2)*2':'trunc(ih/2)*2',fps=15,format=yuv420p",
+            "-g", "30", "-b:v", "1000k", "-maxrate", "1500k", "-bufsize", "3000k",
             "-c:a", "aac", "-b:a", "128k",
             "-shortest"
         ])
 
     else:
-        # 视频模式 (保持原样，视频自带时间戳，需要在输入前加 -re)
+        # 视频模式 (保持原样)
         cmd.extend([
             "-re", "-i", src,
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
