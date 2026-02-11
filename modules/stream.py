@@ -135,17 +135,20 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             return
 
         cmd.extend([
-            "-re", # 关键修复：将 -re 移至最前，强制按照时长读取图片，解决 FPS 过高导致黑屏问题
+            # 1. 图片输入：移除 -re，添加无限循环
             "-stream_loop", "-1", 
-            "-f", "concat", "-safe", "0", "-i", list_file, # Input 0 (Images)
-            "-i", src, # Input 1 (Audio)
+            "-f", "concat", "-safe", "0", "-i", list_file, 
+            
+            # 2. 音频输入：添加 -re 以控制整体推流速度 (Clock Master)
+            "-re", "-i", src,
+            
             "-map", "0:v:0", "-map", "1:a:0",
             
-            # 编码参数优化
-            "-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage",
+            # 3. 编码参数：使用 ultrafast 降低 CPU 占用，确保不卡顿
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
             "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
             "-g", "30", "-r", "15", 
-            "-b:v", "1500k", "-maxrate", "2000k", "-bufsize", "4000k", # 限制码率波动
+            "-b:v", "1500k", "-maxrate", "2000k", "-bufsize", "4000k",
             "-pix_fmt", "yuv420p",
             
             "-c:a", "aac", "-ar", "44100", "-b:a", "128k",
@@ -156,11 +159,14 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     elif is_single_image:
         # 单图
         cmd.extend([
-            "-re", # 单图也加 -re 确保稳定
-            "-loop", "1", "-framerate", "15", "-i", background_image, # Input 0
-            "-i", src, # Input 1
+            # 1. 图片输入：移除 -re
+            "-loop", "1", "-framerate", "15", "-i", background_image, 
+            
+            # 2. 音频输入：添加 -re
+            "-re", "-i", src,
+            
             "-map", "0:v:0", "-map", "1:a:0",
-            "-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage",
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
             "-vf", "scale='min(1280,iw)':-2,scale='trunc(iw/2)*2':'trunc(ih/2)*2',format=yuv420p",
             "-g", "30", "-r", "15", "-b:v", "1500k", "-maxrate", "2000k", "-bufsize", "4000k",
             "-pix_fmt", "yuv420p",
@@ -169,7 +175,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         ])
 
     else:
-        # 视频模式
+        # 视频模式 (保持原样，视频自带时间戳，需要在输入前加 -re)
         cmd.extend([
             "-re", "-i", src,
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
