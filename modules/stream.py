@@ -97,7 +97,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     status_msg = None
     if message:
         status_msg = await message.reply_text(
-            f"🚀 启动稳定模式 (240p/15fps)...\n\n"
+            f"🚀 启动稳定模式 (CBR/20fps)...\n\n"
             f"📄 {os.path.basename(src)}\n"
             f"🔑 {current_key_name}\n"
             f"📡 {display_rtmp}\n"
@@ -107,7 +107,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     # --- 构建命令 ---
     cmd = ["ffmpeg", "-y", "-hide_banner"]
     
-    # 网络优化参数
+    # 网络优化参数 - 增加初始连接超时
     if not is_local_file:
         alist_token = config.get('alist_token', '')
         if alist_token:
@@ -117,37 +117,36 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         
         cmd.extend([
             "-reconnect", "1", "-reconnect_at_eof", "1", 
-            "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-            "-rw_timeout", "15000000", "-probesize", "50M", "-analyzeduration", "50M"
+            "-reconnect_streamed", "1", "-reconnect_delay_max", "10",
+            "-rw_timeout", "20000000", "-probesize", "50M", "-analyzeduration", "50M"
         ])
 
-    # --- 稳定模式参数 ---
+    # --- 稳定模式核心参数 ---
     # 分辨率: 426x240 (240p)
-    # 帧率: 15 fps (提高心跳频率，防止断连)
-    # 音频: 44100Hz 双声道 (标准)
-    # 关键点: -tune zerolatency (极低延迟，防止缓冲区堆积导致 I/O error)
+    # 帧率: 20 fps (标准流畅度，减少超时)
+    # GOP: 40 (严格 2秒)
     
     target_w, target_h = 426, 240
-    fps_val = "15"
-    gop_val = "30" # 2s at 15fps
+    fps_val = "20"
+    gop_val = "40" # 2s at 20fps
     scale_filter_str = f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2"
 
-    # 通用编码选项
+    # 通用编码选项 (Strict CBR)
     x264_opts = [
         "-c:v", "libx264", 
-        "-preset", "ultrafast", 
-        "-tune", "zerolatency", # 关键：零延迟模式
-        "-profile:v", "baseline", # 提高兼容性
-        "-level", "3.0"
+        "-preset", "veryfast", # 稍微提高压缩效率，节省带宽
+        "-tune", "zerolatency", 
+        "-profile:v", "baseline",
+        "-level", "3.0",
+        "-sc_threshold", "0" # 关键：禁止场景切换插入关键帧，强制严格 GOP
     ]
 
-    # 通用音频选项
+    # 通用音频选项 (Lower Bitrate)
     audio_opts = [
         "-c:a", "aac", 
         "-ar", "44100", 
         "-ac", "2", 
-        "-b:a", "128k",
-        "-af", "aresample=async=1000" # 稍微放宽同步容差
+        "-b:a", "64k" # 降低音频码率，减轻 Broken Pipe 概率
     ]
 
     if is_slideshow:
@@ -183,10 +182,11 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         cmd.extend([
             "-vf", f"{scale_filter_str},fps={fps_val},format=yuv420p",
             "-g", gop_val, 
-            "-b:v", "300k", "-maxrate", "400k", "-bufsize", "600k",
+            # 强制 CBR
+            "-b:v", "400k", "-minrate", "400k", "-maxrate", "400k", "-bufsize", "800k",
         ])
         cmd.extend(audio_opts)
-        cmd.extend(["-shortest", "-max_muxing_queue_size", "1024"])
+        cmd.extend(["-shortest", "-max_muxing_queue_size", "2048"])
 
     elif is_single_image:
         temp_bg = "temp_bg_240p.jpg"
@@ -217,10 +217,11 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             "-vf", vf_filter,
             "-g", gop_val,
             "-r", fps_val,
-            "-b:v", "250k", "-maxrate", "350k", "-bufsize", "500k",
+            # 强制 CBR
+            "-b:v", "350k", "-minrate", "350k", "-maxrate", "350k", "-bufsize", "700k",
         ])
         cmd.extend(audio_opts)
-        cmd.extend(["-shortest", "-max_muxing_queue_size", "1024"])
+        cmd.extend(["-shortest", "-max_muxing_queue_size", "2048"])
 
     else:
         # 视频模式
@@ -229,8 +230,9 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         ])
         cmd.extend(x264_opts)
         cmd.extend([
-            "-b:v", "800k", "-maxrate", "1200k", "-bufsize", "1500k",
-            "-g", "60", 
+            # 强制 CBR (视频模式稍高一点)
+            "-b:v", "600k", "-minrate", "600k", "-maxrate", "600k", "-bufsize", "1200k",
+            "-g", "60", # 3s GOP for video
             "-vf", "scale='min(854,iw)':'-2',format=yuv420p"
         ])
         cmd.extend(audio_opts)
@@ -268,8 +270,8 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
                     f"✅ 推流运行中\n"
                     f"PID: {ffmpeg_process.pid}\n"
                     f"模式: {mode_text}\n"
-                    f"配置: 240p / 15fps (Zerolatency)\n\n"
-                    f"💡 已优化连接稳定性，请检查。",
+                    f"配置: 240p / 20fps / CBR模式\n\n"
+                    f"💡 启用了严格恒定码率以防止断流。",
                     reply_markup=keyboard
                 )
 
