@@ -3,12 +3,9 @@ import os
 import logging
 import sys
 
-# --- 核心配置 ---
-# 请在此处填入您的 Token 和 ID，或者在 Web 界面/本地编辑器修改。
-TOKEN = "7565918204:AAH3E3Bb9Op7Xv-kezL6GISeJj8mA6Ycwug" 
-OWNER_ID = 1878794912
-# Cloudflare Tunnel Token
-CLOUDFLARED_TOKEN = "eyJhIjoiMjEyOGViYjhlN2Y2OTU4MjZkNzVmNjkwZTBhZTE4MjEiLCJ0IjoiYTE3OTBhNmMtMWQyZi00MDUzLTlkOTktOGMyZWUyZmJlNTczIiwicyI6Ik1UTXpaamhsT1RVdE1tTTJaaTAwWmpnMUxXSXlaakF0WldWa1lUVXhaR0V3TlRnMCJ9"
+# --- 默认配置 (仅作为占位符，不应包含真实密钥) ---
+DEFAULT_TOKEN = "YOUR_BOT_TOKEN_HERE" 
+DEFAULT_OWNER_ID = 0
 
 CONFIG_FILE = "bot_config.json"
 FFMPEG_LOG_FILE = "ffmpeg.log"
@@ -24,31 +21,39 @@ logger = logging.getLogger("Config")
 def is_owner(user_id):
     """检查用户是否为管理员"""
     uid_str = str(user_id).strip()
-    owner_str = str(OWNER_ID).strip()
-    return uid_str == owner_str
+    
+    # 优先从配置加载，其次从环境变量加载
+    config = load_config()
+    owner_id = config.get('owner_id', 0)
+    
+    return uid_str == str(owner_id).strip()
 
 def load_config():
-    """加载配置文件"""
+    """
+    加载配置文件。
+    优先级: 
+    1. 环境变量 (最安全，用于 CI/CD 或 Docker)
+    2. bot_config.json (本地运行，由菜单生成)
+    3. 默认值 (代码中的占位符)
+    """
     config = {}
-    save_needed = False
     
+    # 1. 尝试读取本地文件
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 config = json.load(f)
         except Exception as e:
             logger.error(f"加载配置失败: {e}")
-    
+            
     # --- 迁移逻辑：单一密钥 -> 多密钥列表 ---
+    save_needed = False
     if 'stream_key' in config and 'stream_keys' not in config:
         old_key = config.get('stream_key')
         if old_key and old_key != "❌ 未设置":
             config['stream_keys'] = [{'name': '默认密钥', 'key': old_key}]
             config['active_key_index'] = 0
-            logger.info("已将旧密钥迁移到多密钥列表")
             save_needed = True
-        # 删除旧字段，避免混淆（可选，这里保留 clean）
-        # del config['stream_key'] 
 
     # 确保基本结构存在
     if 'stream_keys' not in config:
@@ -63,20 +68,25 @@ def load_config():
         except:
             pass
 
-    return {
-        'token': config.get('token', TOKEN),
-        'owner_id': config.get('owner_id', OWNER_ID),
+    # 2. 合并环境变量 (环境变量覆盖配置文件，除非配置文件有特定值且环境变量为空)
+    # 这种模式允许用户在 Termux 中通过 export TOKEN=xxx 来临时覆盖，
+    # 但主要还是依赖 bot_config.json
+    
+    final_config = {
+        'token': os.getenv('BOT_TOKEN', config.get('token', DEFAULT_TOKEN)),
+        'owner_id': int(os.getenv('OWNER_ID', config.get('owner_id', DEFAULT_OWNER_ID))),
         'rtmp': config.get('rtmp', None),
-        'rtmp_server': config.get('rtmp_server', ''),
-        # 返回多密钥结构
+        'rtmp_server': os.getenv('RTMP_SERVER', config.get('rtmp_server', '')),
         'stream_keys': config.get('stream_keys', []),
         'active_key_index': config.get('active_key_index', 0),
-        'alist_token': config.get('alist_token', ''),
-        'cloudflared_token': config.get('cloudflared_token', CLOUDFLARED_TOKEN)
+        'alist_token': os.getenv('ALIST_TOKEN', config.get('alist_token', '')),
+        'cloudflared_token': os.getenv('CLOUDFLARED_TOKEN', config.get('cloudflared_token', ''))
     }
+    
+    return final_config
 
 def save_config(config_update):
-    """保存配置文件"""
+    """保存配置文件到 bot_config.json"""
     try:
         current_config = {}
         if os.path.exists(CONFIG_FILE):

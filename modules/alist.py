@@ -28,6 +28,45 @@ def check_alist_version():
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
 
+async def mount_local_storage():
+    """调用 API 挂载本机存储"""
+    config = load_config()
+    token = config.get('alist_token', '')
+    if not token:
+        return False, "请先配置 Alist Token (在设置菜单中)"
+    
+    base_url = "http://127.0.0.1:5244"
+    api_url = f"{base_url}/api/admin/storage/create"
+    
+    headers = {
+        "User-Agent": "TermuxBot",
+        "Content-Type": "application/json",
+        "Authorization": token
+    }
+    
+    # 挂载 /sdcard
+    payload = {
+        "mount_path": "/本机存储",
+        "driver": "Local",
+        "cache_expiration": 30,
+        "status": "work",
+        "addition": "{\"root_folder_path\":\"/sdcard\",\"thumbnail\":true,\"thumb_cache_folder\":\"\",\"show_hidden\":true,\"mkdir_perm\":\"777\"}",
+        "remark": "Auto Mounted by TermuxBot",
+        "order": 0,
+        "web_proxy": False,
+        "webdav_policy": "302_on_lan"
+    }
+
+    try:
+        resp = requests.post(api_url, json=payload, headers=headers, timeout=5)
+        data = resp.json()
+        if data.get("code") == 200:
+            return True, "✅ 挂载成功！请刷新列表查看 `/本机存储`"
+        else:
+            return False, f"挂载失败: {data.get('message')}"
+    except Exception as e:
+        return False, str(e)
+
 async def fix_alist_config():
     """尝试修复 Alist 配置文件并重启"""
     # 1. 停止 Alist

@@ -16,7 +16,6 @@ def get_alist_browser_keyboard(current_path, items, page=0):
     生成 Alist 文件浏览器键盘
     current_path: 当前路径字符串
     items: 文件对象列表
-    page: 分页页码 (暂留接口，目前简单的全部显示)
     """
     keyboard = []
     
@@ -84,6 +83,7 @@ def get_alist_keyboard(alist_running, cft_running):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{a_icon} {a_text}", callback_data=a_cb)],
         [InlineKeyboardButton(f"🚇 {c_icon} {c_text}", callback_data=c_cb), InlineKeyboardButton("🔑 设置穿透 Token", callback_data="btn_cft_token")],
+        [InlineKeyboardButton("💾 一键挂载本机存储", callback_data="btn_alist_mount_local")],
         [InlineKeyboardButton("ℹ️ 获取访问地址", callback_data="btn_alist_info"), InlineKeyboardButton("👀 查看管理员账号", callback_data="btn_alist_admin")],
         [InlineKeyboardButton("📝 重置登录密码", callback_data="btn_alist_set_pwd"), InlineKeyboardButton("🔧 修复局域网访问", callback_data="btn_alist_fix")],
         [InlineKeyboardButton("❌ 关闭菜单", callback_data="btn_close")]
@@ -118,6 +118,12 @@ def get_keys_management_keyboard(keys, active_index, delete_mode=False):
 
     keyboard.append([InlineKeyboardButton("🔙 返回设置", callback_data="btn_menu_settings")])
     return InlineKeyboardMarkup(keyboard)
+
+def get_download_menu_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 查看正在下载的任务", callback_data="btn_check_downloads")],
+        [InlineKeyboardButton("❌ 关闭", callback_data="btn_close")]
+    ])
 
 def get_back_keyboard(target="main"):
     """通用的返回按钮"""

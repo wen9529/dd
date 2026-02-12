@@ -1,8 +1,33 @@
 import asyncio
 import os
 import logging
+import psutil
 
 logger = logging.getLogger("Downloader")
+
+def get_active_downloads():
+    """获取正在运行的 aria2c 进程信息"""
+    tasks = []
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
+        try:
+            if 'aria2c' in proc.info['name']:
+                cmdline = proc.info.get('cmdline', [])
+                # 尝试从命令行参数中提取 URL 或文件名
+                target = "未知任务"
+                for arg in cmdline:
+                    if arg.startswith("http") or arg.startswith("magnet"):
+                        target = arg.split("/")[-1][:30]
+                        break
+                
+                # 计算运行时间
+                duration = int(time.time() - proc.info['create_time'])
+                
+                tasks.append(f"• PID: `{proc.info['pid']}` | ⏳ {duration}s\n  📄 {target}")
+        except:
+            continue
+    return tasks
+
+import time
 
 async def aria2_download_task(url: str, context, chat_id: int):
     """
@@ -15,7 +40,6 @@ async def aria2_download_task(url: str, context, chat_id: int):
         download_dir = os.path.join(os.getcwd(), "downloads")
         os.makedirs(download_dir, exist_ok=True)
 
-    # 简化的文件名获取逻辑 (Aria2 会自动处理，我们主要用于日志)
     filename_hint = url.split('/')[-1].split('?')[0]
     if len(filename_hint) > 50: filename_hint = filename_hint[:47] + "..."
     if not filename_hint: filename_hint = "未知文件"
@@ -24,17 +48,15 @@ async def aria2_download_task(url: str, context, chat_id: int):
     
     try:
         # 构建命令
-        # -x 16: 16线程
-        # -s 16: 16连接
-        # --seed-time=0: BT下载完不保种
-        # -d: 目录
         cmd = [
             "aria2c", 
             "-d", download_dir,
             "-x", "16", 
             "-s", "16",
             "--seed-time=0",
-            "--summary-interval=0", # 减少日志垃圾
+            "--summary-interval=0",
+            # 伪装 User-Agent 防止被某些站点拒绝
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             url
         ]
 
@@ -47,15 +69,13 @@ async def aria2_download_task(url: str, context, chat_id: int):
         stdout, stderr = await process.communicate()
         
         if process.returncode == 0:
-            # 尝试从 stdout 中解析实际文件名 (可选优化)
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"✅ **下载完成**\n\n📂 目录: `{download_dir}`\n📄 文件: `{filename_hint}`\n\n提示: 您现在可以在 [📺 本地视频] 中找到它并推流。",
+                text=f"✅ **下载完成**\n\n📂 目录: `{download_dir}`\n📄 文件: `{filename_hint}`\n\n提示: 您现在可以在 [☁️ 云盘浏览] -> [/sdcard/Download] 中找到它。",
                 parse_mode='Markdown'
             )
         else:
             err_msg = stderr.decode().strip()
-            # 截取最后几行错误
             if len(err_msg) > 500: err_msg = err_msg[-500:]
             await context.bot.send_message(
                 chat_id=chat_id,

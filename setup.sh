@@ -15,6 +15,13 @@ echo -e "${BLUE}=======================================${NC}"
 echo -e "${BLUE}   Termux Bot: 强制更新与部署工具      ${NC}"
 echo -e "${BLUE}=======================================${NC}"
 
+# 0. 初始化目录结构
+echo -e "\n${BLUE}[0/6] 初始化目录...${NC}"
+mkdir -p downloads
+mkdir -p logs
+mkdir -p data
+echo "  ✅ 目录检查完成"
+
 # 配置 git 用户信息，防止 stash 失败
 git config --global user.email "bot@termux.local"
 git config --global user.name "TermuxBot"
@@ -106,7 +113,7 @@ if [ $? -eq 0 ]; then
     pm2 restart "$BOT_APP" --update-env
 else
     echo "  🚀 启动机器人进程..."
-    pm2 start bot.py --name "$BOT_APP" --interpreter python --time
+    pm2 start bot.py --name "$BOT_APP" --interpreter python --time --output logs/bot_out.log --error logs/bot_err.log
 fi
 
 # 检查 updater 是否存在
@@ -116,7 +123,7 @@ if [ $? -eq 0 ]; then
     pm2 restart "$UPDATER_APP" --update-env
 else
     echo "  🚀 启动更新守护进程..."
-    pm2 start auto_update.py --name "$UPDATER_APP" --interpreter python --time
+    pm2 start auto_update.py --name "$UPDATER_APP" --interpreter python --time --output logs/updater_out.log --error logs/updater_err.log
 fi
 
 # 保存当前进程列表
@@ -126,5 +133,5 @@ echo -e "\n${BLUE}=======================================${NC}"
 echo -e "       ${GREEN}🚀 部署完成！${NC}"
 echo -e "${BLUE}=======================================${NC}"
 echo -e "机器人正在后台运行。"
-echo -e "请先运行: ${YELLOW}termux-setup-storage${NC} 确保有存储权限"
+echo -e "建议运行: ${YELLOW}termux-wake-lock${NC} 防止手机锁屏后断网"
 echo -e "日志查看: ${YELLOW}pm2 log termux-bot${NC}"

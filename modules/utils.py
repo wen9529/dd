@@ -2,6 +2,8 @@ import subprocess
 import psutil
 import socket
 import os
+import time
+import asyncio
 from .alist import get_alist_pid, check_alist_version
 from .stream import get_stream_status
 
@@ -56,8 +58,85 @@ def format_size(size):
         size /= 1024
     return f"{size:.1f}TB"
 
-def _scan_files(extensions, extra_paths=[]):
-    """通用的文件扫描函数 (增强版 - 支持中文路径与更多目录)"""
+def get_disk_usage():
+    """获取磁盘使用率"""
+    try:
+        # 检查 /sdcard 或 内部存储
+        path = "/sdcard" if os.path.exists("/sdcard") else "/"
+        usage = psutil.disk_usage(path)
+        return f"{format_size(usage.used)} / {format_size(usage.total)} ({usage.percent}%)"
+    except:
+        return "未知"
+        
+def get_thermal_status():
+    """尝试获取设备温度 (Termux 特性)"""
+    try:
+        # 尝试通过 termux-battery-status 获取
+        output = subprocess.check_output(["termux-battery-status"], text=True, stderr=subprocess.DEVNULL)
+        import json
+        data = json.loads(output)
+        temp = data.get("temperature", 0)
+        return f"{temp:.1f}°C"
+    except:
+        # 尝试读取系统文件
+        try:
+            with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
+                temp = int(f.read().strip()) / 1000
+                return f"{temp:.1f}°C"
+        except:
+            return "N/A"
+
+def get_system_uptime():
+    """获取系统运行时间"""
+    try:
+        boot_time = psutil.boot_time()
+        uptime_seconds = time.time() - boot_time
+        days, remainder = divmod(uptime_seconds, 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes, _ = divmod(remainder, 60)
+        return f"{int(days)}天 {int(hours)}小时 {int(minutes)}分"
+    except:
+        return "未知"
+
+async def run_shell_command(cmd):
+    """异步执行 Shell 命令"""
+    try:
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        
+        res = ""
+        if stdout: res += f"{stdout.decode().strip()}\n"
+        if stderr: res += f"ERROR:\n{stderr.decode().strip()}"
+        
+        if not res.strip(): res = "✅ 执行成功 (无输出)"
+        return res
+    except Exception as e:
+        return f"❌ 执行出错: {str(e)}"
+
+def run_speedtest_sync():
+    """同步运行 Speedtest (将在线程中调用)"""
+    try:
+        import speedtest
+        st = speedtest.Speedtest()
+        st.get_best_server()
+        download = st.download() / 1024 / 1024 # Mbps
+        upload = st.upload() / 1024 / 1024 # Mbps
+        ping = st.results.ping
+        return True, f"⬇️ 下载: {download:.2f} Mbps\n⬆️ 上传: {upload:.2f} Mbps\n📶 延迟: {ping:.0f} ms"
+    except ImportError:
+        return False, "❌ 未安装 speedtest-cli 库"
+    except Exception as e:
+        return False, f"❌ 测试失败: {str(e)}"
+
+def _scan_files_sync(extensions, extra_paths=[]):
+    """
+    优化的同步文件扫描
+    使用 os.scandir 替代 os.walk，速度更快
+    """
     home = os.path.expanduser("~")
     
     # 扩展搜索路径
@@ -78,82 +157,68 @@ def _scan_files(extensions, extra_paths=[]):
         "/sdcard/WeiXin",
         "/sdcard/Tencent/QQfile_recv",
         
-        # 3. 根目录 (用于捕获 /sdcard/我的音乐 这种自定义文件夹)
+        # 3. 根目录
         "/sdcard",
-
-        # 4. Termux 映射路径 (包含外部 SD 卡)
-        os.path.join(home, "storage", "shared"),
-        os.path.join(home, "storage", "music"),
-        os.path.join(home, "storage", "downloads"),
-        os.path.join(home, "storage", "external-1"), # 外部 SD 卡
         
-        # 5. 机器人当前目录
+        # 4. Termux 内部
         os.getcwd()
     ] + extra_paths
     
     found_files = []
-    seen_paths = set() # 用于去重
-
-    # 需要排除的系统目录，防止扫描耗时过长或无权限
-    exclude_dirs = {'Android', 'LOST.DIR', 'System Volume Information', 'MIUI', 'data', 'obb'}
+    seen_paths = set() 
+    exclude_dirs = {'Android', 'LOST.DIR', 'System Volume Information', 'MIUI', 'data', 'obb', '.git', '__pycache__', 'cache', 'log'}
 
     for base_path in search_paths:
-        if not os.path.exists(base_path):
-            continue
+        if not os.path.exists(base_path): continue
             
-        # 计算基础路径的深度，用于控制递归层级
         base_depth = base_path.rstrip(os.sep).count(os.sep)
 
         try:
-            # 使用 os.walk 进行递归扫描
             for root, dirs, files in os.walk(base_path, topdown=True):
-                # 过滤目录：排除隐藏目录和系统目录
+                # 过滤目录
                 dirs[:] = [d for d in dirs if not d.startswith('.') and d not in exclude_dirs]
                 
-                # 深度控制：超过 3 层子目录停止递归 (防止扫描太深)
+                # 严格控制深度：只向下扫 3 层
                 current_depth = root.rstrip(os.sep).count(os.sep)
                 if current_depth - base_depth > 3:
-                    dirs[:] = [] 
+                    dirs[:] = []
                     continue
 
                 for name in files:
                     if name.lower().endswith(extensions):
                         try:
-                            # 获取真实路径
                             full_path = os.path.join(root, name)
-                            real_path = os.path.realpath(full_path)
+                            # 避免重复
+                            if full_path in seen_paths: continue
                             
-                            if real_path in seen_paths:
-                                continue
+                            stat = os.stat(full_path)
+                            # 过滤掉小于 100KB 的文件 (通常是缓存或缩略图)
+                            if stat.st_size < 102400: continue
                             
-                            seen_paths.add(real_path)
-                            
-                            stat = os.stat(real_path)
+                            seen_paths.add(full_path)
                             found_files.append({
                                 "name": name,
-                                "path": real_path,
+                                "path": full_path,
                                 "mtime": stat.st_mtime,
                                 "size": stat.st_size
                             })
-                        except Exception:
+                        except:
                             continue
-        except PermissionError:
-            continue
-        except Exception:
+        except:
             pass
     
-    # 按修改时间倒序
+    # 按修改时间倒序，取前 40 个
     found_files.sort(key=lambda x: x['mtime'], reverse=True)
-    return found_files[:30] # 返回最新的30个文件
+    return found_files[:40]
 
 def scan_local_videos():
-    return _scan_files(('.mp4', '.mkv', '.avi', '.flv', '.mov', '.ts', '.webm'))
+    return _scan_files_sync(('.mp4', '.mkv', '.avi', '.flv', '.mov', '.ts', '.webm'))
 
 def scan_local_audio():
-    return _scan_files(('.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.wma'))
+    return _scan_files_sync(('.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.wma'))
 
 def scan_local_images():
-    return _scan_files(('.jpg', '.jpeg', '.png', '.bmp', '.webp', '.gif'))
+    return _scan_files_sync(('.jpg', '.jpeg', '.png', '.bmp', '.webp', '.gif'))
 
 def get_env_report():
     """生成环境报告文本"""
@@ -162,25 +227,27 @@ def get_env_report():
     alist_pid = get_alist_pid()
     stream_active = get_stream_status()
     local_ip = get_local_ip()
+    temp = get_thermal_status()
     
     cpu_usage = psutil.cpu_percent(interval=None)
     mem_info = psutil.virtual_memory()
     mem_usage = f"{mem_info.used / 1024 / 1024:.0f}MB / {mem_info.total / 1024 / 1024:.0f}MB"
+    disk_usage = get_disk_usage()
+    uptime = get_system_uptime()
     
-    # 简单的存储权限检查
-    storage_access = "✅ 正常" if os.access("/sdcard", os.R_OK) else "❌ 无权限 (请运行 termux-setup-storage)"
+    storage_access = "✅ 正常" if os.access("/sdcard", os.R_OK) else "❌ 无权限"
 
     return (
-        f"🖥 **服务器环境报告**\n\n"
-        f"🌐 **局域网IP**: `{local_ip}`\n\n"
-        f"📂 **存储访问**: {storage_access}\n\n"
+        f"🖥 **Termux 状态报告**\n\n"
+        f"🌐 **IP**: `{local_ip}`\n"
+        f"⏱ **运行**: {uptime}\n"
+        f"💾 **存储**: {disk_usage}\n"
+        f"🌡 **温度**: {temp}\n\n"
         f"🎥 **FFmpeg**:\n"
-        f"• 安装状态: {'✅ ' + ffmpeg_ver if ffmpeg_ver else '❌ 未安装'}\n"
-        f"• 推流任务: {'🔴 进行中' if stream_active else '⚪ 空闲'}\n\n"
+        f"• 状态: {'✅ ' + ffmpeg_ver if ffmpeg_ver else '❌ 未安装'}\n"
+        f"• 任务: {'🔴 推流中' if stream_active else '⚪ 空闲'}\n\n"
         f"🗂 **Alist**:\n"
-        f"• 安装状态: {'✅ ' + alist_ver if alist_ver else '❌ 未安装'}\n"
-        f"• 运行状态: {'🟢 运行中 (PID ' + str(alist_pid) + ')' if alist_pid else '🔴 已停止'}\n\n"
-        f"⚙️ **系统资源**:\n"
-        f"• CPU: {cpu_usage}%\n"
-        f"• 内存: {mem_usage}"
+        f"• 状态: {'✅ ' + alist_ver if alist_ver else '❌ 未安装'}\n"
+        f"• 进程: {'🟢 运行中' if alist_pid else '🔴 已停止'}\n\n"
+        f"⚙️ **资源**: CPU {cpu_usage}% | RAM {mem_usage}"
     )

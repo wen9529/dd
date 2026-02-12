@@ -10,11 +10,14 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Messa
 
 # --- 导入模块 ---
 from modules.config import load_config, save_config, is_owner, TOKEN, OWNER_ID, CONFIG_FILE
-from modules.utils import get_local_ip, get_all_ips, get_env_report, scan_local_audio, scan_local_images, format_size
-from modules.alist import get_alist_pid, fix_alist_config, alist_list_files
+from modules.utils import (
+    get_local_ip, get_all_ips, get_env_report, scan_local_audio, scan_local_images, 
+    format_size, run_shell_command, run_speedtest_sync
+)
+from modules.alist import get_alist_pid, fix_alist_config, alist_list_files, mount_local_storage
 from modules.cloudflared import get_cloudflared_pid, start_cloudflared, stop_cloudflared
-from modules.stream import run_ffmpeg_stream, stop_ffmpeg_process, get_stream_status, get_log_content
-from modules.downloader import aria2_download_task
+from modules.stream import run_ffmpeg_stream, stop_ffmpeg_process, get_stream_status, get_log_content, kill_zombie_processes
+from modules.downloader import aria2_download_task, get_active_downloads
 from modules.keyboards import (
     get_main_menu_keyboard,
     get_alist_keyboard, 
@@ -22,7 +25,8 @@ from modules.keyboards import (
     get_back_keyboard, 
     get_keys_management_keyboard,
     get_alist_browser_keyboard,
-    get_alist_file_actions_keyboard
+    get_alist_file_actions_keyboard,
+    get_download_menu_keyboard
 )
 
 # 配置日志
@@ -66,6 +70,59 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.message.reply_text("🚫 **未授权访问**")
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """帮助菜单"""
+    if not is_owner(update.effective_user.id): return
+    
+    help_text = (
+        "📘 **Termux Bot 帮助文档**\n\n"
+        "🎮 **基础指令**:\n"
+        "• `/start` - 呼出底部菜单\n"
+        "• `/stopstream` - 强制停止推流\n"
+        "• `/speedtest` - 网络测速\n"
+        "• `/cmd <命令>` - 执行 Termux 命令\n\n"
+        "📺 **推流模式**:\n"
+        "1. **直接回复链接** - 自动开始推流\n"
+        "2. **回复 Alist 路径** - 例如 `/电影/aaa.mp4`\n"
+        "3. **菜单操作** - 点击 [云盘浏览] 或 [音频+图片]\n\n"
+        "🛠 **维护**:\n"
+        "• 配置修改后建议点击 [♻️ 重启机器人]\n"
+        "• 无法连接 Alist 时尝试菜单中的 [🔧 修复]\n"
+        "• 记得运行 `termux-wake-lock` 防止断网"
+    )
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+async def cmd_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理 /cmd 或 /sh 命令"""
+    if not is_owner(update.effective_user.id): return
+    
+    if not context.args:
+        await update.message.reply_text("💡 用法: `/cmd <命令>`\n例如: `/cmd ls -la`", parse_mode='Markdown')
+        return
+
+    cmd = " ".join(context.args)
+    status_msg = await update.message.reply_text(f"⏳ 执行中: `{cmd}`...", parse_mode='Markdown')
+    
+    result = await run_shell_command(cmd)
+    
+    # Telegram 消息长度限制 4096
+    if len(result) > 4000:
+        result = result[:2000] + "\n...[内容过长截断]...\n" + result[-2000:]
+        
+    await status_msg.edit_text(f"💻 **执行结果**:\n```bash\n{result}\n```", parse_mode='Markdown')
+
+async def speedtest_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理测速命令"""
+    if not is_owner(update.effective_user.id): return
+    
+    status_msg = await update.message.reply_text("⚡ 正在测速，请稍候 (约需 10-20秒)...")
+    
+    # 在线程中运行同步的 speedtest，避免阻塞 bot 主循环
+    loop = asyncio.get_event_loop()
+    success, result = await loop.run_in_executor(None, run_speedtest_sync)
+    
+    await status_msg.edit_text(f"📊 **测速结果**\n\n{result}")
 
 # --- Alist 浏览逻辑核心 ---
 async def update_alist_browser(query, context, path):
@@ -113,6 +170,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- 关闭/返回 ---
     if data == "btn_close":
         await query.delete_message()
+        return
+    
+    # --- 测速 ---
+    if data == "btn_run_speedtest":
+        await query.edit_message_text("⚡ 正在测速，请稍候 (约需 10-20秒)...")
+        loop = asyncio.get_event_loop()
+        success, result = await loop.run_in_executor(None, run_speedtest_sync)
+        
+        # 重新添加查看日志按钮
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回状态", callback_data="btn_refresh_status")]])
+        await query.edit_message_text(f"📊 **测速结果**\n\n{result}", reply_markup=keyboard)
+        return
+        
+    if data == "btn_refresh_status":
+        text = get_env_report()
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚡ 开始测速", callback_data="btn_run_speedtest")],
+            [InlineKeyboardButton("📜 查看实时日志", callback_data="btn_view_log")],
+            [InlineKeyboardButton("❌ 关闭", callback_data="btn_close")]
+        ])
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode='Markdown')
         return
 
     # --- 1. Alist 浏览器导航 ---
@@ -182,6 +260,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await query.edit_message_text("🚀 已添加到后台下载队列", parse_mode='Markdown')
         asyncio.create_task(aria2_download_task(full_url, context, user_id))
+        
+    elif data == "btn_check_downloads":
+        tasks = get_active_downloads()
+        if not tasks:
+            text = "💤 当前没有正在进行的下载任务"
+        else:
+            text = "📥 **正在下载的任务**:\n\n" + "\n".join(tasks)
+        
+        await query.edit_message_text(text, reply_markup=get_back_keyboard("main"), parse_mode='Markdown')
 
     # --- 设置菜单 ---
     elif data == "btn_menu_settings":
@@ -208,19 +295,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- 音频选定 -> 选择图片 ---
     elif data.startswith("play_aud_"):
         idx = int(data.split("_")[-1])
+        # 使用 getattr 安全获取，防止 key 不存在
         audios = context.user_data.get('local_audios', [])
         
         if 0 <= idx < len(audios):
              context.user_data['temp_audio'] = audios[idx]['path']
              context.user_data['temp_audio_name'] = audios[idx]['name']
              
-             images = scan_local_images()
+             await query.edit_message_text("🔍 正在扫描图片 (异步)...")
+             
+             # 异步调用图片扫描，防止阻塞
+             loop = asyncio.get_event_loop()
+             images = await loop.run_in_executor(None, scan_local_images)
+             
              context.user_data['local_images'] = images
-             # 初始化为 set 集合
              context.user_data['selected_img_indices'] = set()
              
              if not images:
-                 await query.answer("⚠️ 未找到图片，无法生成视频画面", show_alert=True)
+                 await query.edit_message_text("⚠️ 未找到图片，无法生成视频画面", reply_markup=get_back_keyboard("main"))
                  return
              
              await query.edit_message_text(
@@ -276,9 +368,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # 排序保证顺序一致
             selected_image_paths = [images[i]['path'] for i in sorted(list(selected_indices))]
             
-            # --- 关键修复 ---
-            # 如果只选了一张图，直接传字符串，触发 stream.py 的单图极速优化模式
-            # 如果是多张图，传列表，触发轮播模式
             bg_arg = selected_image_paths
             if len(selected_image_paths) == 1:
                 bg_arg = selected_image_paths[0]
@@ -287,8 +376,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await run_ffmpeg_stream(update, audio_path, background_image=bg_arg)
             
             # 清理状态
-            del context.user_data['temp_audio']
-            del context.user_data['selected_img_indices']
+            if 'temp_audio' in context.user_data: del context.user_data['temp_audio']
+            if 'selected_img_indices' in context.user_data: del context.user_data['selected_img_indices']
             
         except Exception as e:
             logger.error(f"启动推流失败: {e}")
@@ -314,6 +403,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pid = get_alist_pid()
         cft_pid = get_cloudflared_pid()
         await query.edit_message_reply_markup(reply_markup=get_alist_keyboard(bool(pid), bool(cft_pid)))
+    
+    elif data == "btn_alist_mount_local":
+        await query.answer("⏳ 正在请求 API 挂载存储...")
+        success, msg = await mount_local_storage()
+        if success:
+             await query.message.reply_text(msg)
+        else:
+             await query.message.reply_text(f"❌ 挂载失败: {msg}\n\n请确保 Alist 已启动且 Token 配置正确。")
 
     # Cloudflare Tunnel 控制
     elif data == "btn_cft_token":
@@ -446,10 +543,13 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "📊 状态监控":
         context.user_data['state'] = None
-        await update.message.reply_text(get_env_report(), parse_mode='Markdown')
-        if get_stream_status():
-             keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📜 查看实时日志", callback_data="btn_view_log")]])
-             await update.message.reply_text("💡 推流正在进行中...", reply_markup=keyboard)
+        report = get_env_report()
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚡ 开始测速", callback_data="btn_run_speedtest")],
+            [InlineKeyboardButton("📜 查看实时日志", callback_data="btn_view_log")],
+            [InlineKeyboardButton("❌ 关闭", callback_data="btn_close")]
+        ])
+        await update.message.reply_text(report, reply_markup=keyboard, parse_mode='Markdown')
         return
 
     if text == "♻️ 重启机器人":
@@ -500,9 +600,9 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "📥 **离线下载 (Aria2)**\n\n"
             "请回复下载链接 (支持 HTTP/HTTPS/磁力链接)。\n"
-            "文件将保存到 `/sdcard/Download`。\n\n"
-            "回复 `cancel` 取消。",
-            parse_mode='Markdown'
+            "文件将保存到 `/sdcard/Download`。\n",
+            parse_mode='Markdown',
+            reply_markup=get_download_menu_keyboard()
         )
         return
 
@@ -619,14 +719,21 @@ async def handle_audio_stream_logic(query, context, message=None):
     target = query.message if query else message
     if not target: return
     
-    if query: await query.edit_message_text("🔍 正在扫描本地音乐...", parse_mode='Markdown')
-    else: await target.reply_text("🔍 正在扫描本地音乐...", parse_mode='Markdown')
+    msg_handle = None
+    if query: 
+        # await query.answer("🔍 正在扫描...") # 可选
+        await query.edit_message_text("🔍 正在扫描本地音乐 (异步)...", parse_mode='Markdown')
+    else: 
+        msg_handle = await target.reply_text("🔍 正在扫描本地音乐 (异步)...", parse_mode='Markdown')
     
-    audios = scan_local_audio()
+    # 关键修改：使用 executor 运行同步的 scan_local_audio，防止阻塞主循环
+    loop = asyncio.get_event_loop()
+    audios = await loop.run_in_executor(None, scan_local_audio)
+    
     if not audios:
-         text = "❌ **未找到音频文件**\n请检查 `/sdcard/Music` 目录。"
+         text = "❌ **未找到音频文件**\n请检查 `/sdcard/Music` 或 `/sdcard/Download` 目录。"
          if query: await query.edit_message_text(text, parse_mode='Markdown')
-         else: await target.reply_text(text, parse_mode='Markdown')
+         elif msg_handle: await msg_handle.edit_text(text, parse_mode='Markdown')
          return
     
     context.user_data['local_audios'] = audios
@@ -640,8 +747,10 @@ async def handle_audio_stream_logic(query, context, message=None):
     keyboard.append([InlineKeyboardButton("❌ 关闭", callback_data="btn_close")])
     
     text = "📂 **选择背景音乐**:"
-    if query: await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-    else: await target.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    markup = InlineKeyboardMarkup(keyboard)
+    
+    if query: await query.edit_message_text(text, reply_markup=markup, parse_mode='Markdown')
+    elif msg_handle: await msg_handle.edit_text(text, reply_markup=markup, parse_mode='Markdown')
 
 
 async def start_stream_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -664,6 +773,9 @@ def main():
     if not os.path.exists(CONFIG_FILE):
         print(f"⚠️  配置文件 {CONFIG_FILE} 不存在，将在首次运行时创建。")
     
+    # 启动时清理僵尸进程
+    kill_zombie_processes()
+
     config = load_config()
     final_token = config.get('token')
     
@@ -675,8 +787,13 @@ def main():
         application = ApplicationBuilder().token(final_token).build()
         
         application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command)) # 添加帮助指令
         application.add_handler(CommandHandler("stream", start_stream_cmd))
         application.add_handler(CommandHandler("stopstream", stop_stream_cmd))
+        application.add_handler(CommandHandler("cmd", cmd_handler)) # Shell CMD Handler
+        application.add_handler(CommandHandler("sh", cmd_handler))  # Alias
+        application.add_handler(CommandHandler("speedtest", speedtest_handler)) # Speedtest handler
+        
         application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_input))
         application.add_handler(CallbackQueryHandler(button_callback))
         
