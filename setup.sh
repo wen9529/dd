@@ -1,138 +1,60 @@
 #!/bin/bash
+# StreamForge Ultimate Setup Script
 
-# 颜色定义
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m' # No Color
+echo "🚀 Starting Setup..."
 
-# 确保在脚本出错时不会立即退出，尝试执行完后续逻辑
-set +e
+# 0. Safety Check for .env file in HOME Directory
+ENV_FILE="$HOME/.env"
 
-clear
-echo -e "${BLUE}=======================================${NC}"
-echo -e "${BLUE}   Termux Bot: 强制更新与部署工具      ${NC}"
-echo -e "${BLUE}=======================================${NC}"
-
-# 0. 初始化目录结构
-echo -e "\n${BLUE}[0/6] 初始化目录...${NC}"
-mkdir -p downloads
-mkdir -p logs
-mkdir -p data
-echo "  ✅ 目录检查完成"
-
-# 配置 git 用户信息，防止 stash 失败
-git config --global user.email "bot@termux.local"
-git config --global user.name "TermuxBot"
-git config --global --add safe.directory "*"
-
-# 1. 智能强制更新
-if [ -d ".git" ]; then
-    echo -e "\n${BLUE}[1/6] 正在检查更新...${NC}"
-    
-    # 暂存本地修改（保存您填写的 Token 和 ID）
-    echo "  💾 正在暂存您的本地修改..."
-    git stash
-    
-    # 拉取最新代码
-    echo "  ⬇️  从服务器拉取更新..."
-    git pull origin main
-    
-    # 恢复本地修改
-    echo "  📂 恢复您的本地修改..."
-    git stash pop
-    
-    if [ $? -eq 0 ]; then
-        echo -e "  ${GREEN}✔ 代码更新完成${NC}"
-    else
-        echo -e "  ${YELLOW}⚠️  恢复配置时遇到冲突，将优先使用 git 上的新版本。请检查 bot_config.json 是否保留了您的配置。${NC}"
-    fi
+if [ -f "$ENV_FILE" ]; then
+  echo "⚠️  Found existing .env file at $ENV_FILE"
+  echo "    Skipping configuration generation to protect your secrets."
+  echo "    To overwrite, run: rm $ENV_FILE"
 else
-    echo -e "\n${BLUE}[1/6] 非 Git 仓库，跳过更新${NC}"
+  echo "⚙️  Configuring Environment Variables in $ENV_FILE..."
+  cat << EOF > "$ENV_FILE"
+${GENERATE_ENV_CONTENT(config)}
+EOF
 fi
 
-# 2. 权限修复
-echo -e "\n${BLUE}[2/6] 修复权限...${NC}"
-chmod +x *.py *.sh
-chmod 755 .
+# 1. Update and Install System Packages
+echo "📦 Installing System Packages..."
+pkg update -y
+pkg install -y python alist aria2 nodejs git ffmpeg
 
-# 3. 依赖安装 (增强版)
-echo -e "\n${BLUE}[3/6] 检查依赖...${NC}"
-# 安装基础工具和 SSL 库 (修复 Telegram 连接问题)
-pkg install termux-tools openssl-tool -y
+# 2. Install Node.js Global Packages
+echo "📦 Installing PM2..."
+npm install -g pm2
 
-# 安装 TUR 源 (用于获取 cloudflared)
-if ! command -v cloudflared &> /dev/null; then
-    echo "  📦 添加 TUR 仓库..."
-    pkg install tur-repo -y
-fi
+# 3. Install Python Dependencies
+echo "📦 Installing Python Libs..."
+pip install python-telegram-bot requests python-dotenv
 
-if ! command -v ffmpeg &> /dev/null; then
-    echo "  🎥 安装 FFmpeg..."
-    pkg install ffmpeg -y
-fi
-# Robust Alist install
-if ! command -v alist &> /dev/null; then
-    echo "  🗂 安装 Alist..."
-    pkg install alist -y || pkg install openlist -y
-fi
-if ! command -v node &> /dev/null; then
-    echo "  📦 安装 Node.js (PM2 依赖)..."
-    pkg install nodejs -y
-fi
-if ! command -v aria2c &> /dev/null; then
-    echo "  ⬇️ 安装 Aria2 (离线下载)..."
-    pkg install aria2 -y
-fi
-if ! command -v cloudflared &> /dev/null; then
-    echo "  🚇 安装 Cloudflared (内网穿透)..."
-    pkg install cloudflared -y
-fi
+# Generate Aria2 Secret if empty
+ARIA_RPC=${config.aria2Secret}
 
-echo "  🐍 安装 Python 依赖..."
-pip install --upgrade pip > /dev/null 2>&1
-pip install -r requirements.txt
+echo "📥 Configuring Aria2 for Alist..."
+mkdir -p ~/.config/aria2
+cat << EOF > ~/.config/aria2/aria2.conf
+enable-rpc=true
+rpc-allow-origin-all=true
+rpc-listen-all=true
+rpc-secret=$ARIA_RPC
+EOF
 
-# 4. PM2 守护进程配置
-echo -e "\n${BLUE}[4/6] 配置后台进程...${NC}"
-if ! command -v pm2 &> /dev/null; then
-    echo "  ⚙️ 安装 PM2..."
-    npm install -g pm2
-fi
+echo "📄 Creating Intelligent Bot..."
+cat << 'PYTHON_EOF' > bot.py
+${PYTHON_BOT_SCRIPT}
+PYTHON_EOF
 
-BOT_APP="termux-bot"
-UPDATER_APP="termux-updater"
+echo "✅ Starting Services..."
+# Start Aria2 in background
+pm2 start aria2c --name aria2 -- --conf-path=$HOME/.config/aria2/aria2.conf -D
+# Start Alist
+pm2 start alist --name alist -- server
+# Start Bot
+pm2 start bot.py --name stream-bot --interpreter python
 
-# 5. 重启逻辑 (优化：使用 restart 而不是 delete，防止进程丢失)
-echo -e "\n${BLUE}[5/6] 重启服务...${NC}"
-
-# 检查 termux-bot 是否存在
-pm2 describe "$BOT_APP" > /dev/null 2>&1
-if [ $? -eq 0 ]; then
-    echo "  🔄 重启机器人进程..."
-    pm2 restart "$BOT_APP" --update-env
-else
-    echo "  🚀 启动机器人进程..."
-    pm2 start bot.py --name "$BOT_APP" --interpreter python --time --output logs/bot_out.log --error logs/bot_err.log
-fi
-
-# 检查 updater 是否存在
-pm2 describe "$UPDATER_APP" > /dev/null 2>&1
-if [ $? -eq 0 ]; then
-    echo "  🔄 重启更新守护进程..."
-    pm2 restart "$UPDATER_APP" --update-env
-else
-    echo "  🚀 启动更新守护进程..."
-    pm2 start auto_update.py --name "$UPDATER_APP" --interpreter python --time --output logs/updater_out.log --error logs/updater_err.log
-fi
-
-# 保存当前进程列表
-pm2 save --force > /dev/null 2>&1
-
-echo -e "\n${BLUE}=======================================${NC}"
-echo -e "       ${GREEN}🚀 部署完成！${NC}"
-echo -e "${BLUE}=======================================${NC}"
-echo -e "机器人正在后台运行。"
-echo -e "建议运行: ${YELLOW}termux-wake-lock${NC} 防止手机锁屏后断网"
-echo -e "日志查看: ${YELLOW}pm2 log termux-bot${NC}"
+pm2 save
+echo "🎉 Done! Alist Aria2 Secret: $ARIA_RPC"
+echo "ℹ️  Bot Token & Config saved to: $ENV_FILE"

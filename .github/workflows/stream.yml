@@ -1,0 +1,70 @@
+name: Alist Stream to Telegram
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_url:
+        description: 'Media URL (Video or Audio)'
+        required: true
+      image_url:
+        description: 'Cover Image URL (For Audio Mode)'
+        required: false
+      rtmp_url:
+        description: 'RTMP URL'
+        required: true
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 # 6 Hours Max
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      
+      - name: Stream to Telegram
+        run: |
+          FILE_URL="${{ github.event.inputs.file_url }}"
+          IMAGE_URL="${{ github.event.inputs.image_url }}"
+          RTMP_URL="${{ github.event.inputs.rtmp_url }}"
+          
+          # High Quality Audio Settings: AAC 320k 48kHz
+          # High Quality Video Settings: 6000k bitrate, Medium Preset, 1080p
+          
+          if [ -n "$IMAGE_URL" ]; then
+            echo "🎵 Audio + Image Mode Detected"
+            echo "Audio: $FILE_URL"
+            echo "Image: $IMAGE_URL"
+            
+            # -loop 1: Loop the image
+            # -framerate 30: Create 30fps video
+            # -shortest: End stream when audio ends
+            # -tune stillimage: Optimize encoding for static image
+            
+            ffmpeg -re \
+              -loop 1 -framerate 30 -i "$IMAGE_URL" \
+              -i "$FILE_URL" \
+              -c:v libx264 -preset medium -tune stillimage -b:v 4000k -maxrate 4000k -bufsize 8000k \
+              -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p" \
+              -c:a aac -b:a 320k -ar 48000 -ac 2 \
+              -shortest \
+              -f flv "$RTMP_URL"
+              
+          else
+            echo "🎬 Video Mode Detected"
+            echo "Video: $FILE_URL"
+            
+            # -reconnect flags: Robustness against network drops
+            # -preset medium: Better quality than veryfast
+            # -profile:v high: High profile for better quality
+            
+            ffmpeg -re \
+              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+              -i "$FILE_URL" \
+              -c:v libx264 -preset medium -profile:v high -level 4.1 \
+              -b:v 6000k -maxrate 6000k -bufsize 12000k \
+              -vf "scale=1920:-2:flags=lanczos" \
+              -pix_fmt yuv420p -g 60 \
+              -c:a aac -b:a 320k -ar 48000 -ac 2 \
+              -f flv "$RTMP_URL"
+          fi
