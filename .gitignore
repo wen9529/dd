@@ -1,3 +1,17 @@
-# 您已决定不忽略任何文件。
-# 所有文件（包括 bot_config.json, 日志, 下载文件）都将被 Git 追踪。
-# 请确保您的 Git 仓库是私有的！
+# 安全：忽略环境配置文件
+.env
+
+# 忽略临时文件
+__pycache__/
+*.pyc
+
+# 忽略日志
+logs/
+*.log
+
+# 忽略本地数据目录 (如果包含敏感数据)
+data/
+downloads/
+
+# 忽略 Node 模块 (如果存在)
+node_modules/

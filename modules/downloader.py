@@ -32,18 +32,24 @@ async def aria2_download_task(url: str, context, chat_id: int):
     """
     执行 Aria2 下载任务，并在完成后通知用户
     """
-    download_dir = "/sdcard/Download"
+    # 优先从环境变量获取下载目录，默认为 /sdcard/Download
+    default_dir = "/sdcard/Download"
+    download_dir = os.getenv("DOWNLOAD_DIR", default_dir)
     
+    # 检查目录是否存在，不存在则尝试创建，创建失败则回退到项目内
     if not os.path.exists(download_dir):
-        # 尝试回退到内部存储
-        download_dir = os.path.join(os.getcwd(), "downloads")
-        os.makedirs(download_dir, exist_ok=True)
+        try:
+            os.makedirs(download_dir, exist_ok=True)
+        except OSError:
+            # 回退到项目内部 downloads 目录
+            download_dir = os.path.join(os.getcwd(), "downloads")
+            os.makedirs(download_dir, exist_ok=True)
 
     filename_hint = url.split('/')[-1].split('?')[0]
     if len(filename_hint) > 50: filename_hint = filename_hint[:47] + "..."
     if not filename_hint: filename_hint = "未知文件"
 
-    logger.info(f"开始下载: {url}")
+    logger.info(f"开始下载: {url} -> {download_dir}")
     
     try:
         # 构建命令
@@ -70,7 +76,7 @@ async def aria2_download_task(url: str, context, chat_id: int):
         if process.returncode == 0:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"✅ **下载完成**\n\n📂 目录: `{download_dir}`\n📄 文件: `{filename_hint}`\n\n提示: 您现在可以在 [☁️ 云盘浏览] -> [/sdcard/Download] 中找到它。",
+                text=f"✅ **下载完成**\n\n📂 目录: `{download_dir}`\n📄 文件: `{filename_hint}`\n\n提示: 您现在可以在 [☁️ 云盘浏览] -> [{download_dir}] 中找到它。",
                 parse_mode='Markdown'
             )
         else:

@@ -2,6 +2,23 @@ import json
 import os
 import logging
 import sys
+from dotenv import load_dotenv
+
+# --- 加载环境变量 (.env) ---
+# 策略：按优先级顺序加载，找不到则跳过
+# 1. 加载当前项目目录下的 .env
+load_dotenv()
+
+# 2. 加载上级目录 (Termux 根目录/Home) 下的 .env
+# 这是为了满足用户在项目外层管理配置的需求
+parent_env = os.path.join(os.path.dirname(os.getcwd()), '.env')
+if os.path.exists(parent_env):
+    load_dotenv(parent_env)
+
+# 3. 加载用户主目录下的 .env (作为备选)
+home_env = os.path.expanduser('~/.env')
+if os.path.exists(home_env):
+    load_dotenv(home_env)
 
 # --- 默认配置 ---
 DEFAULT_TOKEN = "YOUR_BOT_TOKEN_HERE" 
@@ -15,7 +32,7 @@ FFMPEG_LOG_FILE = "ffmpeg.log"
 # 配置日志
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
+    level=os.getenv('LOG_LEVEL', 'INFO').upper(),
     stream=sys.stdout
 )
 logger = logging.getLogger("Config")
@@ -34,7 +51,7 @@ def load_config():
     """
     加载配置文件。
     优先级: 
-    1. 环境变量 (最安全，用于 CI/CD 或 Docker)
+    1. 环境变量 (包括 .env 文件)
     2. bot_config.json (本地运行，由菜单生成)
     3. 默认值 (代码中的占位符)
     """
@@ -49,17 +66,25 @@ def load_config():
             logger.error(f"加载配置失败: {e}")
             
     # --- 迁移逻辑：单一密钥 -> 多密钥列表 ---
-    save_needed = False
-    if 'stream_key' in config and 'stream_keys' not in config:
-        old_key = config.get('stream_key')
-        if old_key and old_key != "❌ 未设置":
-            config['stream_keys'] = [{'name': '默认密钥', 'key': old_key}]
-            config['active_key_index'] = 0
-            save_needed = True
-
-    # 确保基本结构存在
+    # 检查环境变量中是否有密钥
+    env_key = os.getenv('RTMP_STREAM_KEY')
+    
+    # 如果 config 中没有 keys，但环境变量有，则初始化
     if 'stream_keys' not in config:
         config['stream_keys'] = []
+
+    # 如果环境变量有 key，且列表中不存在，则添加
+    if env_key and not any(k['key'] == env_key for k in config['stream_keys']):
+        config['stream_keys'].insert(0, {'name': 'Env密钥', 'key': env_key})
+
+    # 旧的 json 结构迁移
+    save_needed = False
+    if 'stream_key' in config and not config['stream_keys']:
+        old_key = config.get('stream_key')
+        if old_key and old_key != "❌ 未设置":
+            config['stream_keys'].append({'name': '默认密钥', 'key': old_key})
+            save_needed = True
+
     if 'active_key_index' not in config:
         config['active_key_index'] = 0
 
