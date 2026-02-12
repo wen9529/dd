@@ -1,32 +1,23 @@
-
-export interface StreamConfig {
-  // GitHub Repo Details
-  githubUser: string;
-  githubRepo: string;
-  githubPat: string; // Personal Access Token
-  
-  // Telegram Configuration
-  telegramBotToken: string;
-  telegramAdminId: string;
-  telegramRtmpUrl: string;
-  telegramStreamKey: string;
-
-  // Alist Configuration
-  alistPassword: string;
-  aria2Secret: string; // New: For offline download security
-
-  // File Defaults
-  fileName: string;
-  fileUrl: string;
-
-  // Stream Settings
-  defaultCoverUrl: string; // Custom cover for audio files
-  videoBitrate: string;    // e.g., "6000k"
+export enum AppView {
+  DASHBOARD = 'DASHBOARD',
+  GENERATOR = 'GENERATOR',
+  TERMINAL_GUIDE = 'TERMINAL_GUIDE',
+  SETTINGS = 'SETTINGS'
 }
 
-export interface Message {
+export interface BotProject {
   id: string;
-  role: 'user' | 'model';
+  name: string;
+  description: string;
+  code: string;
+  dependencies: string[];
+  createdAt: number;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
   content: string;
-  timestamp: number;
+  codeBlock?: string;
+  isThinking?: boolean;
 }
