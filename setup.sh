@@ -72,9 +72,10 @@ if ! command -v ffmpeg &> /dev/null; then
     echo "  🎥 安装 FFmpeg..."
     pkg install ffmpeg -y
 fi
+# Robust Alist install
 if ! command -v alist &> /dev/null; then
     echo "  🗂 安装 Alist..."
-    pkg install alist -y
+    pkg install alist -y || pkg install openlist -y
 fi
 if ! command -v node &> /dev/null; then
     echo "  📦 安装 Node.js (PM2 依赖)..."

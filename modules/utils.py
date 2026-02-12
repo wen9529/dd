@@ -4,6 +4,7 @@ import socket
 import os
 import time
 import asyncio
+import requests
 from .alist import get_alist_pid, check_alist_version
 from .stream import get_stream_status
 
@@ -51,6 +52,15 @@ def get_all_ips():
         pass
     return ips
 
+async def get_public_ip_async():
+    """异步获取公网 IP"""
+    try:
+        loop = asyncio.get_running_loop()
+        # 设置短超时，防止卡住
+        return await loop.run_in_executor(None, lambda: requests.get("https://api.ipify.org", timeout=2).text.strip())
+    except:
+        return "N/A"
+
 def format_size(size):
     for unit in ['B', 'KB', 'MB', 'GB']:
         if size < 1024:
@@ -69,10 +79,10 @@ def get_disk_usage():
         return "未知"
         
 def get_thermal_status():
-    """尝试获取设备温度 (Termux 特性)"""
+    """尝试获取设备温度 (Termux 特性) - 增加超时防止卡死"""
     try:
-        # 尝试通过 termux-battery-status 获取
-        output = subprocess.check_output(["termux-battery-status"], text=True, stderr=subprocess.DEVNULL)
+        # 使用 timeout 防止 termux-api 无响应导致卡死
+        output = subprocess.check_output(["termux-battery-status"], text=True, stderr=subprocess.DEVNULL, timeout=2)
         import json
         data = json.loads(output)
         temp = data.get("temperature", 0)
@@ -220,14 +230,17 @@ def scan_local_audio():
 def scan_local_images():
     return _scan_files_sync(('.jpg', '.jpeg', '.png', '.bmp', '.webp', '.gif'))
 
-def get_env_report():
-    """生成环境报告文本"""
+async def get_env_report():
+    """生成环境报告文本 (Async)"""
     ffmpeg_ver = check_program_version("ffmpeg")
     alist_ver = check_alist_version()
     alist_pid = get_alist_pid()
     stream_active = get_stream_status()
     local_ip = get_local_ip()
     temp = get_thermal_status()
+    
+    # 异步获取公网 IP，防止阻塞
+    public_ip = await get_public_ip_async()
     
     cpu_usage = psutil.cpu_percent(interval=None)
     mem_info = psutil.virtual_memory()
@@ -239,7 +252,8 @@ def get_env_report():
 
     return (
         f"🖥 **Termux 状态报告**\n\n"
-        f"🌐 **IP**: `{local_ip}`\n"
+        f"🌐 **内网IP**: `{local_ip}`\n"
+        f"🌏 **公网IP**: `{public_ip}`\n"
         f"⏱ **运行**: {uptime}\n"
         f"💾 **存储**: {disk_usage}\n"
         f"🌡 **温度**: {temp}\n\n"

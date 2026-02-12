@@ -106,11 +106,21 @@ async def cmd_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     result = await run_shell_command(cmd)
     
-    # Telegram 消息长度限制 4096
-    if len(result) > 4000:
-        result = result[:2000] + "\n...[内容过长截断]...\n" + result[-2000:]
+    # 优化：如果输出过长，发送文件
+    if len(result) > 3000:
+        file_path = "cmd_output.txt"
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(result)
         
-    await status_msg.edit_text(f"💻 **执行结果**:\n```bash\n{result}\n```", parse_mode='Markdown')
+        await status_msg.delete()
+        await update.message.reply_document(
+            document=open(file_path, "rb"), 
+            caption=f"💻 命令 `{cmd}` 执行结果 (输出过长)",
+            filename="output.txt"
+        )
+        os.remove(file_path)
+    else:
+        await status_msg.edit_text(f"💻 **执行结果**:\n```bash\n{result}\n```", parse_mode='Markdown')
 
 async def speedtest_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理测速命令"""
@@ -184,7 +194,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     if data == "btn_refresh_status":
-        text = get_env_report()
+        # 获取状态报告 (现在是异步)
+        text = await get_env_report()
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("⚡ 开始测速", callback_data="btn_run_speedtest")],
             [InlineKeyboardButton("📜 查看实时日志", callback_data="btn_view_log")],
@@ -516,7 +527,33 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "btn_view_log":
         log_content = get_log_content()
         if len(log_content) > 3000: log_content = "..." + log_content[-3000:]
-        await context.bot.send_message(chat_id=user_id, text=f"📜 **实时日志**:\n\n```\n{log_content}\n```", parse_mode='Markdown')
+        
+        # 添加下载日志按钮
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📥 下载完整日志文件", callback_data="btn_dl_log")],
+            [InlineKeyboardButton("❌ 关闭", callback_data="btn_close")]
+        ])
+        
+        await context.bot.send_message(
+            chat_id=user_id, 
+            text=f"📜 **实时日志** (后3000字符):\n\n```\n{log_content}\n```", 
+            parse_mode='Markdown',
+            reply_markup=keyboard
+        )
+
+    elif data == "btn_dl_log":
+        # 下载日志文件
+        files_to_send = ["logs/bot_out.log", "logs/bot_err.log"]
+        sent_count = 0
+        for fpath in files_to_send:
+            if os.path.exists(fpath):
+                await context.bot.send_document(chat_id=user_id, document=open(fpath, "rb"), caption=f"📄 {fpath}")
+                sent_count += 1
+        
+        if sent_count == 0:
+            await query.answer("⚠️ 未找到日志文件", show_alert=True)
+        else:
+             await query.answer("✅ 日志已发送")
         
     elif data == "btn_stop_stream_quick":
         if stop_ffmpeg_process():
@@ -543,7 +580,7 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "📊 状态监控":
         context.user_data['state'] = None
-        report = get_env_report()
+        report = await get_env_report() # 现在是异步
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("⚡ 开始测速", callback_data="btn_run_speedtest")],
             [InlineKeyboardButton("📜 查看实时日志", callback_data="btn_view_log")],
