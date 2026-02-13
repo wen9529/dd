@@ -7,12 +7,19 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# 获取脚本所在绝对路径，确保 PM2 在正确目录下运行
+CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$CURRENT_DIR"
+
 BOT_APP="termux-bot"
 UPDATER_APP="termux-updater"
 TUNNEL_APP="termux-tunnel"
 ALIST_APP="termux-alist"
 CONFIG_FILE="bot_config.json"
-BACKUP_CONFIG="/data/data/com.termux/files/usr/tmp/bot_config.bak"
+BACKUP_CONFIG="$CURRENT_DIR/bot_config.bak"
+
+# 创建日志目录
+mkdir -p "$CURRENT_DIR/logs"
 
 # 修复启动脚本权限
 if [ -f "start.sh" ]; then
@@ -22,11 +29,11 @@ fi
 echo -e "${BLUE}=======================================${NC}"
 echo -e "${BLUE}   Termux Bot: 全自动环境部署系统      ${NC}"
 echo -e "${BLUE}=======================================${NC}"
+echo -e "📂 工作目录: $CURRENT_DIR"
 
 # --- 0. 基础环境与依赖全检 ---
 echo -e "\n${BLUE}[1/6] 检查系统依赖...${NC}"
 
-# 0.2 定义检查安装函数
 check_and_install() {
     if ! command -v "$1" &> /dev/null; then
         echo -e "  📦 正在安装: ${YELLOW}$1${NC} ..."
@@ -36,13 +43,12 @@ check_and_install() {
     fi
 }
 
-# 0.3 批量检查基础软件包
 DEPENDENCIES=("python" "ffmpeg" "aria2" "git" "nodejs" "wget" "openssl-tool" "proot" "tar")
 for dep in "${DEPENDENCIES[@]}"; do
     check_and_install "$dep"
 done
 
-# 0.4 专项检查: Cloudflared (内网穿透)
+# Cloudflared 检查
 if ! command -v cloudflared &> /dev/null; then
     echo -e "  🔍 未检测到 cloudflared，尝试安装..."
     pkg install cloudflared -y 2>/dev/null
@@ -52,16 +58,11 @@ if ! command -v cloudflared &> /dev/null; then
         if [[ "$ARCH" == "aarch64" ]]; then
             wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 -O $PREFIX/bin/cloudflared
             chmod +x $PREFIX/bin/cloudflared
-            echo -e "  ✅ Cloudflared 二进制安装完成"
-        else
-            echo -e "  ❌ 自动下载仅支持 aarch64 架构，请手动安装。"
         fi
     fi
-else
-    echo -e "  ✅ 已安装: cloudflared"
 fi
 
-# 0.5 专项检查: Alist (网盘管理)
+# Alist 检查
 if ! command -v alist &> /dev/null; then
     echo -e "  🔍 未检测到 Alist，尝试安装..."
     pkg install alist -y 2>/dev/null
@@ -74,21 +75,14 @@ if ! command -v alist &> /dev/null; then
             mv alist $PREFIX/bin/
             rm alist-linux-arm64.tar.gz
             chmod +x $PREFIX/bin/alist
-            echo -e "  ✅ Alist 二进制安装完成"
-        else
-            echo -e "  ❌ 自动下载仅支持 aarch64 架构，请手动安装。"
         fi
     fi
-else
-    echo -e "  ✅ 已安装: alist"
 fi
 
-# 0.6 专项检查: PM2
+# PM2 检查
 if ! command -v pm2 &> /dev/null; then
     echo -e "  📦 正在安装: ${YELLOW}pm2${NC} ..."
     npm install -g pm2
-else
-    echo -e "  ✅ 已安装: pm2"
 fi
 
 # --- 1. Python 依赖检查 ---
@@ -114,57 +108,57 @@ if [ -d ".git" ]; then
     else
         echo -e "  ✅ 代码已是最新"
     fi
-else
-    echo -e "  ⚠️ 非 Git 仓库，跳过更新检查"
 fi
 
 
 # --- 3. 进程管理 ---
 echo -e "\n${BLUE}[4/6] 启动服务...${NC}"
 
-# 寻找 .env 文件位置
+# 寻找 .env
 ENV_FILE=""
-if [ -f ".env" ]; then
-    ENV_FILE=".env"
-elif [ -f "../.env" ]; then
-    ENV_FILE="../.env"
-elif [ -f "$HOME/.env" ]; then
-    ENV_FILE="$HOME/.env"
-fi
+if [ -f ".env" ]; then ENV_FILE=".env"; elif [ -f "$HOME/.env" ]; then ENV_FILE="$HOME/.env"; fi
 
-# 强力获取 Cloudflared Token
+# 获取 Cloudflared Token
 CF_TOKEN=""
 if [ -n "$ENV_FILE" ]; then
     echo -e "  🔍 加载配置文件: $ENV_FILE"
-    # 使用 awk/sed 处理可能的引号和空格，更稳健
     CF_TOKEN=$(grep "^CLOUDFLARED_TOKEN" "$ENV_FILE" 2>/dev/null | awk -F '=' '{print $2}' | tr -d '"' | tr -d "'")
-else
-    echo -e "  ⚠️ 未找到 .env 配置文件"
 fi
 
-# 重启函数
 restart_services() {
-    # 1. Bot (解释器 python)
-    pm2 restart "$BOT_APP" --update-env 2>/dev/null || pm2 start bot.py --name "$BOT_APP" --interpreter python --time --output logs/bot_out.log --error logs/bot_err.log
+    # 强制重新加载 PM2 配置
+    # 使用 delete + start 确保 cwd 参数生效
     
-    # 2. Updater (解释器 python)
-    pm2 restart "$UPDATER_APP" --update-env 2>/dev/null || pm2 start auto_update.py --name "$UPDATER_APP" --interpreter python --time --output logs/updater_out.log --error logs/updater_err.log
+    PYTHON_EXEC=$(command -v python)
+    
+    echo -e "  🔄 正在重置 PM2 进程 (使用绝对路径)..."
 
-    # 3. Alist (解释器 none, 二进制)
-    # 移除 'time' 参数，修复启动错误
+    # 1. Bot
+    pm2 delete "$BOT_APP" &>/dev/null
+    pm2 start "$CURRENT_DIR/bot.py" --name "$BOT_APP" --interpreter "$PYTHON_EXEC" --cwd "$CURRENT_DIR" --time --output "$CURRENT_DIR/logs/bot_out.log" --error "$CURRENT_DIR/logs/bot_err.log" --restart-delay 3000
+
+    # 2. Updater
+    pm2 delete "$UPDATER_APP" &>/dev/null
+    pm2 start "$CURRENT_DIR/auto_update.py" --name "$UPDATER_APP" --interpreter "$PYTHON_EXEC" --cwd "$CURRENT_DIR" --time --output "$CURRENT_DIR/logs/updater_out.log" --error "$CURRENT_DIR/logs/updater_err.log" --restart-delay 60000
+
+    # 3. Alist
     if command -v alist &> /dev/null; then
         echo -e "  🗂 启动 Alist..."
-        pm2 restart "$ALIST_APP" 2>/dev/null || pm2 start alist --name "$ALIST_APP" --interpreter none -- server
+        ALIST_EXEC=$(command -v alist)
+        pm2 delete "$ALIST_APP" &>/dev/null
+        pm2 start "$ALIST_EXEC" --name "$ALIST_APP" --interpreter none --cwd "$CURRENT_DIR" -- server
     fi
 
-    # 4. Tunnel (解释器 none, 二进制)
-    # 移除 'time' 参数，修复启动错误
+    # 4. Tunnel
     if [ -n "$CF_TOKEN" ] && [ "${#CF_TOKEN}" -gt 20 ]; then
-        echo -e "  🚇 启动固定隧道 (Cloudflared)..."
-        echo -e "     Token 前缀: ${CF_TOKEN:0:10}..."
-        pm2 restart "$TUNNEL_APP" 2>/dev/null || pm2 start cloudflared --name "$TUNNEL_APP" --interpreter none -- tunnel run --token "$CF_TOKEN"
+        if command -v cloudflared &> /dev/null; then
+            echo -e "  🚇 启动 Cloudflared 隧道..."
+            CF_EXEC=$(command -v cloudflared)
+            pm2 delete "$TUNNEL_APP" &>/dev/null
+            pm2 start "$CF_EXEC" --name "$TUNNEL_APP" --interpreter none --cwd "$CURRENT_DIR" -- tunnel run --token "$CF_TOKEN"
+        fi
     else
-        echo -e "  ⚪ 跳过隧道启动: 未在 $ENV_FILE 找到有效 CLOUDFLARED_TOKEN"
+        echo -e "  ⚪ 跳过隧道启动: Token 未配置或无效"
     fi
 }
 
@@ -189,20 +183,20 @@ fi
 echo -e "\n${BLUE}[6/6] 保存进程状态...${NC}"
 pm2 save
 
-# 检查 Token 状态
+# 检查 Token
 TOKEN_STATUS="❓ 未知"
 if [ -n "$ENV_FILE" ]; then
     if grep -q "TG_BOT_TOKEN=." "$ENV_FILE" 2>/dev/null; then
         TOKEN_STATUS="✅ 已配置"
     else
-        TOKEN_STATUS="❌ 未配置 (Bot将进入休眠，请编辑 $ENV_FILE)"
+        TOKEN_STATUS="❌ 未配置 (Bot将进入休眠模式)"
     fi
 else
-    TOKEN_STATUS="❌ .env 文件缺失 (请在项目根目录或 ~ 目录创建)"
+    TOKEN_STATUS="❌ .env 文件缺失"
 fi
 
 echo -e "\n${BLUE}=======================================${NC}"
 echo -e "       ${GREEN}🚀 系统运行中${NC}"
-echo -e "       Bot Token 状态: ${TOKEN_STATUS}"
-echo -e "       输入 ${YELLOW}pm2 list${NC} 查看详细状态"
+echo -e "       Bot Token: ${TOKEN_STATUS}"
+echo -e "       Alist 状态: $(pm2 show $ALIST_APP | grep status | awk '{print $4}')"
 echo -e "${BLUE}=======================================${NC}"
