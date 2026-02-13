@@ -28,6 +28,37 @@ def check_alist_version():
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
 
+def get_alist_admin_password():
+    """尝试通过 alist admin 命令获取密码 (适配不同版本输出)"""
+    try:
+        # 运行 alist admin
+        # 常见输出: "admin: xxxxx" 或 "username: admin\npassword: xxxxx"
+        output = subprocess.check_output(["alist", "admin"], text=True, stderr=subprocess.STDOUT).strip()
+        
+        password = ""
+        lines = output.split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            if line.startswith("password:"):
+                password = line.split("password:")[-1].strip()
+                break
+            elif line.startswith("admin:"):
+                password = line.split("admin:")[-1].strip()
+                break
+        
+        # 如果没匹配到，尝试取最后一行（旧版本行为）
+        if not password and lines:
+            # 过滤掉可能的日志行 [INFO] 等
+            valid_lines = [l for l in lines if not l.startswith('[') and len(l) > 5]
+            if valid_lines:
+                password = valid_lines[-1].strip()
+                
+        return password
+    except Exception as e:
+        print(f"Failed to get alist admin password: {e}")
+        return None
+
 def get_auth_token():
     """获取 Alist Token，如果未配置则尝试通过账号密码登录获取"""
     config = load_config()
@@ -38,10 +69,21 @@ def get_auth_token():
         return token
         
     # 尝试自动登录
-    user = config.get('alist_user')
+    user = config.get('alist_user', 'admin')
     pwd = config.get('alist_password')
     host = config.get('alist_host', "http://127.0.0.1:5244")
     
+    # 1. 如果没有密码，尝试从 CLI 获取
+    if not pwd:
+        print("Bot: 未配置 Alist 密码，尝试自动获取...")
+        pwd = get_alist_admin_password()
+        if pwd:
+            print(f"Bot: 自动获取密码成功，已保存。")
+            save_config({'alist_password': pwd})
+        else:
+            print("Bot: 自动获取密码失败，请手动配置。")
+
+    # 2. 尝试登录获取 Token
     if user and pwd:
         try:
             login_url = f"{host}/api/auth/login"
@@ -50,11 +92,14 @@ def get_auth_token():
             if data.get("code") == 200:
                 new_token = data.get("data", {}).get("token")
                 if new_token:
+                    print("Bot: Alist 登录成功，Token 已更新。")
                     # 登录成功，保存 Token 到配置文件，避免重复登录
                     save_config({'alist_token': new_token})
                     return new_token
+            else:
+                print(f"Bot: Alist 登录失败: {data.get('message')}")
         except Exception as e:
-            print(f"Alist 自动登录失败: {e}")
+            print(f"Bot: Alist 登录请求异常: {e}")
             pass
             
     return ""
@@ -62,10 +107,15 @@ def get_auth_token():
 async def mount_local_storage():
     """调用 API 挂载本机存储"""
     config = load_config()
+    
+    # 确保 Alist 正在运行
+    if not get_alist_pid():
+        return False, "Alist 未运行，请先启动服务"
+
     token = get_auth_token() # 使用自动获取逻辑
     
     if not token:
-        return False, "未获取到 Alist Token，且自动登录失败 (请检查 .env 中的用户/密码)"
+        return False, "未获取到 Alist Token，且自动获取密码失败。\n请尝试手动运行 `alist admin` 查看密码，并在 Bot 设置中配置。"
     
     base_url = config.get('alist_host', "http://127.0.0.1:5244")
     api_url = f"{base_url}/api/admin/storage/create"
@@ -94,6 +144,10 @@ async def mount_local_storage():
         data = resp.json()
         if data.get("code") == 200:
             return True, "✅ 挂载成功！请刷新列表查看 `/本机存储`"
+        elif "repect" in str(data.get("message")): # 兼容拼写错误 'repect' vs 'repeat'
+            return True, "✅ 存储已存在，无需重复挂载"
+        elif "duplicate" in str(data.get("message")):
+            return True, "✅ 存储已存在，无需重复挂载"
         else:
             return False, f"挂载失败: {data.get('message')}"
     except Exception as e:
@@ -170,6 +224,10 @@ async def fix_alist_config():
     
     if not found_config:
             log_msg += "⚠️ 未找到配置文件，Alist 将使用默认设置启动 (请稍后再次执行修复以确认)。\n"
+
+    # 清除旧的错误 Token，强迫下次重新获取
+    save_config({'alist_token': ''})
+    log_msg += "🔄 已重置本地缓存的 Alist Token\n"
 
     # 3. 重启 Alist
     # 使用 pm2 启动以保持一致性
