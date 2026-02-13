@@ -44,7 +44,13 @@ def get_image_select_keyboard(images, selected_indices):
     for idx, img in enumerate(images):
         is_selected = idx in selected_indices
         mark = "✅" if is_selected else "⬜"
-        btn_text = f"{mark} {img['name']}"
+        
+        # 标记默认封面
+        prefix = "🖼 "
+        if img.get('is_default'):
+            prefix = "🌐 "
+            
+        btn_text = f"{mark} {prefix}{img['name']}"
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"toggle_img_{idx}")])
     
     # 底部控制按钮
@@ -322,11 +328,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await run_ffmpeg_stream(update, file_path) 
 
     elif data == "alist_act_download":
-        # Alist 下载
+        # Alist 下载 (Aria2 离线下载)
         file_path = context.user_data.get('alist_selected_path')
         if not file_path: return
         encoded_path = quote(file_path, safe='/')
-        full_url = f"http://127.0.0.1:5244/d{encoded_path}"
+        
+        # 使用本地 URL 进行下载，因为 Aria2 和 Alist 在同一台设备上，速度最快
+        config = load_config()
+        local_host = config.get('alist_host', "http://127.0.0.1:5244")
+        full_url = f"{local_host}/d{encoded_path}"
         
         await query.edit_message_text("🚀 已添加到后台下载队列", parse_mode='Markdown')
         asyncio.create_task(aria2_download_task(full_url, context, user_id))
@@ -378,11 +388,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
              loop = asyncio.get_event_loop()
              images = await loop.run_in_executor(None, scan_local_images)
              
+             # 如果配置了默认封面，且图片列表可能为空，或者用户想用默认封面
+             config = load_config()
+             default_cover = config.get('default_cover')
+             if default_cover and default_cover.startswith("http"):
+                 # 添加一个虚拟的图片对象
+                 images.insert(0, {
+                     "name": "使用默认封面",
+                     "path": default_cover,
+                     "is_default": True
+                 })
+
              context.user_data['local_images'] = images
              context.user_data['selected_img_indices'] = set()
              
              if not images:
-                 await query.edit_message_text("⚠️ 未找到图片，无法生成视频画面", reply_markup=get_back_keyboard("main"))
+                 await query.edit_message_text("⚠️ 未找到图片，且未配置默认封面 (.env DEFAULT_COVER)", reply_markup=get_back_keyboard("main"))
                  return
              
              await query.edit_message_text(
@@ -512,6 +533,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_reply_markup(reply_markup=get_alist_keyboard(bool(alist_pid), bool(cft_pid)))
         
     elif data == "btn_alist_info":
+        config = load_config()
         local_ip = get_local_ip()
         all_ips = get_all_ips()
         ip_list_text = "\n".join([f"• `{ip}`" for ip in all_ips]) if all_ips else f"• `{local_ip}`"
@@ -519,9 +541,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cft_pid = get_cloudflared_pid()
         tunnel_status = "🟢 运行中" if cft_pid else "⚪ 未运行"
         
+        public_url = config.get('alist_public_url', "未配置")
+        
         await context.bot.send_message(
             chat_id=user_id, 
-            text=f"🌐 **Alist 访问地址**:\n\n📱 **本机**: `http://127.0.0.1:5244`\n\n📡 **局域网**:\n{ip_list_text}\n\n🚇 **内网穿透**: {tunnel_status}\n(请在 CF 面板查看公网域名)", 
+            text=f"🌐 **Alist 访问地址**:\n\n🌍 **公网 (Tunnel)**:\n`{public_url}`\n\n📱 **本机 (Local)**:\n`http://127.0.0.1:5244`\n\n📡 **局域网 (LAN)**:\n{ip_list_text}\n\n🚇 **穿透进程**: {tunnel_status}", 
             parse_mode='Markdown'
         )
         

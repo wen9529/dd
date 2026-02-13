@@ -5,7 +5,7 @@ import signal
 import asyncio
 import json
 import requests
-from .config import load_config
+from .config import load_config, save_config
 
 def get_alist_pid():
     """查找 alist 进程 PID"""
@@ -28,12 +28,44 @@ def check_alist_version():
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
 
+def get_auth_token():
+    """获取 Alist Token，如果未配置则尝试通过账号密码登录获取"""
+    config = load_config()
+    token = config.get('alist_token', '')
+    
+    # 如果已有 Token，直接返回
+    if token:
+        return token
+        
+    # 尝试自动登录
+    user = config.get('alist_user')
+    pwd = config.get('alist_password')
+    host = config.get('alist_host', "http://127.0.0.1:5244")
+    
+    if user and pwd:
+        try:
+            login_url = f"{host}/api/auth/login"
+            resp = requests.post(login_url, json={"username": user, "password": pwd}, timeout=5)
+            data = resp.json()
+            if data.get("code") == 200:
+                new_token = data.get("data", {}).get("token")
+                if new_token:
+                    # 登录成功，保存 Token 到配置文件，避免重复登录
+                    save_config({'alist_token': new_token})
+                    return new_token
+        except Exception as e:
+            print(f"Alist 自动登录失败: {e}")
+            pass
+            
+    return ""
+
 async def mount_local_storage():
     """调用 API 挂载本机存储"""
     config = load_config()
-    token = config.get('alist_token', '')
+    token = get_auth_token() # 使用自动获取逻辑
+    
     if not token:
-        return False, "请先配置 Alist Token (在设置菜单中)"
+        return False, "未获取到 Alist Token，且自动登录失败 (请检查 .env 中的用户/密码)"
     
     base_url = config.get('alist_host', "http://127.0.0.1:5244")
     api_url = f"{base_url}/api/admin/storage/create"
@@ -138,7 +170,7 @@ def alist_list_files(path="/", page=1, per_page=0):
     返回: (success, data_list/error_msg)
     """
     config = load_config()
-    token = config.get('alist_token', '')
+    token = get_auth_token() # 使用自动获取逻辑
     base_url = config.get('alist_host', "http://127.0.0.1:5244")
     
     api_url = f"{base_url}/api/fs/list"
