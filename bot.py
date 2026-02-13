@@ -4,12 +4,13 @@ import subprocess
 import os
 import signal
 import sys
+import time
 from urllib.parse import quote
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 
 # --- 导入模块 ---
-from modules.config import load_config, save_config, is_owner, TOKEN, OWNER_ID, CONFIG_FILE
+from modules.config import load_config, save_config, is_owner, CONFIG_FILE
 from modules.utils import (
     get_local_ip, get_all_ips, get_env_report, scan_local_audio, scan_local_images, 
     format_size, run_shell_command, run_speedtest_sync
@@ -685,7 +686,8 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         # 强制保存配置，防止覆盖时丢失
-        save_config({'token': TOKEN, 'owner_id': OWNER_ID})
+        curr_config = load_config()
+        save_config({'token': curr_config['token'], 'owner_id': curr_config['owner_id']})
         
         # 使用 --force 参数确保即使 hash 一样也重装依赖和重启
         subprocess.Popen("nohup bash setup.sh --force > logs/update_trigger.log 2>&1 &", shell=True)
@@ -912,8 +914,14 @@ def main():
     config = load_config()
     final_token = config.get('token')
     
+    # --- 防崩溃机制 ---
     if final_token == "YOUR_BOT_TOKEN_HERE" or not final_token:
         print("❌ 错误: TOKEN 未配置！")
+        print("⚠️ 机器人进入[休眠模式]以防止 PM2 无限重启。")
+        print("   请编辑 .env 文件或 bot_config.json 填入正确的 Token。")
+        while True:
+             time.sleep(60)
+             print("💤 [休眠中] 等待配置更新... 请使用 'pm2 stop termux-bot' 停止，或编辑 .env 后重启。")
         return
 
     try:
@@ -938,6 +946,8 @@ def main():
         application.run_polling()
     except Exception as e:
         print(f"❌ 启动失败: {e}")
+        # 如果是网络错误等临时问题，稍微等待再退出，防止快速闪退
+        time.sleep(5)
 
 if __name__ == '__main__':
     main()
