@@ -122,11 +122,24 @@ fi
 # --- 3. 进程管理 ---
 echo -e "\n${BLUE}[4/6] 启动服务...${NC}"
 
+# 寻找 .env 文件位置
+ENV_FILE=""
+if [ -f ".env" ]; then
+    ENV_FILE=".env"
+elif [ -f "../.env" ]; then
+    ENV_FILE="../.env"
+elif [ -f "$HOME/.env" ]; then
+    ENV_FILE="$HOME/.env"
+fi
+
 # 强力获取 Cloudflared Token
 CF_TOKEN=""
-if [ -f ".env" ]; then
+if [ -n "$ENV_FILE" ]; then
+    echo -e "  🔍 加载配置文件: $ENV_FILE"
     # 使用 awk/sed 处理可能的引号和空格，更稳健
-    CF_TOKEN=$(grep "^CLOUDFLARED_TOKEN" .env 2>/dev/null | awk -F '=' '{print $2}' | tr -d '"' | tr -d "'")
+    CF_TOKEN=$(grep "^CLOUDFLARED_TOKEN" "$ENV_FILE" 2>/dev/null | awk -F '=' '{print $2}' | tr -d '"' | tr -d "'")
+else
+    echo -e "  ⚠️ 未找到 .env 配置文件"
 fi
 
 # 重启函数
@@ -151,7 +164,7 @@ restart_services() {
         echo -e "     Token 前缀: ${CF_TOKEN:0:10}..."
         pm2 restart "$TUNNEL_APP" 2>/dev/null || pm2 start cloudflared --name "$TUNNEL_APP" --interpreter none -- tunnel run --token "$CF_TOKEN"
     else
-        echo -e "  ⚪ 跳过隧道启动: 未在 .env 找到有效 CLOUDFLARED_TOKEN"
+        echo -e "  ⚪ 跳过隧道启动: 未在 $ENV_FILE 找到有效 CLOUDFLARED_TOKEN"
     fi
 }
 
@@ -178,14 +191,14 @@ pm2 save
 
 # 检查 Token 状态
 TOKEN_STATUS="❓ 未知"
-if [ -f ".env" ]; then
-    if grep -q "TG_BOT_TOKEN=." .env 2>/dev/null; then
+if [ -n "$ENV_FILE" ]; then
+    if grep -q "TG_BOT_TOKEN=." "$ENV_FILE" 2>/dev/null; then
         TOKEN_STATUS="✅ 已配置"
     else
-        TOKEN_STATUS="❌ 未配置 (Bot将进入休眠，请编辑 .env)"
+        TOKEN_STATUS="❌ 未配置 (Bot将进入休眠，请编辑 $ENV_FILE)"
     fi
 else
-    TOKEN_STATUS="❌ .env 文件缺失"
+    TOKEN_STATUS="❌ .env 文件缺失 (请在项目根目录或 ~ 目录创建)"
 fi
 
 echo -e "\n${BLUE}=======================================${NC}"
