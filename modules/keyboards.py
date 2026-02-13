@@ -107,7 +107,7 @@ def get_alist_keyboard(alist_running, cft_running):
 
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{a_icon} {a_text}", callback_data=a_cb)],
-        [InlineKeyboardButton(f"🚇 {c_icon} {c_text}", callback_data=c_cb), InlineKeyboardButton("🔑 设置穿透 Token", callback_data="btn_cft_token")],
+        [InlineKeyboardButton(f"🚇 {c_icon} {c_text}", callback_data=c_cb), InlineKeyboardButton("🚑 诊断连接问题", callback_data="btn_alist_diagnose")],
         [InlineKeyboardButton("💾 一键挂载本机存储", callback_data="btn_alist_mount_local")],
         [InlineKeyboardButton("ℹ️ 获取访问地址", callback_data="btn_alist_info"), InlineKeyboardButton("👀 查看管理员账号", callback_data="btn_alist_admin")],
         [InlineKeyboardButton("📝 重置登录密码", callback_data="btn_alist_set_pwd"), InlineKeyboardButton("🔧 修复局域网访问", callback_data="btn_alist_fix")],

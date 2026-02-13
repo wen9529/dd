@@ -133,29 +133,30 @@ restart_services() {
     
     echo -e "  🔄 正在重置 PM2 进程 (使用绝对路径)..."
 
-    # 1. Bot
+    # 1. Bot (保留日志)
     pm2 delete "$BOT_APP" &>/dev/null
     pm2 start "$CURRENT_DIR/bot.py" --name "$BOT_APP" --interpreter "$PYTHON_EXEC" --cwd "$CURRENT_DIR" --time --output "$CURRENT_DIR/logs/bot_out.log" --error "$CURRENT_DIR/logs/bot_err.log" --restart-delay 3000
 
-    # 2. Updater
+    # 2. Updater (保留日志)
     pm2 delete "$UPDATER_APP" &>/dev/null
     pm2 start "$CURRENT_DIR/auto_update.py" --name "$UPDATER_APP" --interpreter "$PYTHON_EXEC" --cwd "$CURRENT_DIR" --time --output "$CURRENT_DIR/logs/updater_out.log" --error "$CURRENT_DIR/logs/updater_err.log" --restart-delay 60000
 
-    # 3. Alist
+    # 3. Alist (新增日志)
     if command -v alist &> /dev/null; then
         echo -e "  🗂 启动 Alist..."
         ALIST_EXEC=$(command -v alist)
         pm2 delete "$ALIST_APP" &>/dev/null
-        pm2 start "$ALIST_EXEC" --name "$ALIST_APP" --interpreter none --cwd "$CURRENT_DIR" -- server
+        pm2 start "$ALIST_EXEC" --name "$ALIST_APP" --interpreter none --cwd "$CURRENT_DIR" --output "$CURRENT_DIR/logs/alist_out.log" --error "$CURRENT_DIR/logs/alist_err.log" -- server
     fi
 
-    # 4. Tunnel
+    # 4. Tunnel (新增日志)
     if [ -n "$CF_TOKEN" ] && [ "${#CF_TOKEN}" -gt 20 ]; then
         if command -v cloudflared &> /dev/null; then
             echo -e "  🚇 启动 Cloudflared 隧道..."
             CF_EXEC=$(command -v cloudflared)
             pm2 delete "$TUNNEL_APP" &>/dev/null
-            pm2 start "$CF_EXEC" --name "$TUNNEL_APP" --interpreter none --cwd "$CURRENT_DIR" -- tunnel run --token "$CF_TOKEN"
+            # 这里不使用 --logfile 参数，而是让 pm2 捕获 stdout/stderr，因为 cloudflared 默认输出到 stderr
+            pm2 start "$CF_EXEC" --name "$TUNNEL_APP" --interpreter none --cwd "$CURRENT_DIR" --output "$CURRENT_DIR/logs/tunnel_out.log" --error "$CURRENT_DIR/logs/tunnel_err.log" -- tunnel run --token "$CF_TOKEN"
         fi
     else
         echo -e "  ⚪ 跳过隧道启动: Token 未配置或无效"

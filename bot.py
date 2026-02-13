@@ -14,10 +14,10 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Messa
 from modules.config import load_config, save_config, is_owner, CONFIG_FILE
 from modules.utils import (
     get_local_ip, get_all_ips, get_env_report, scan_local_audio, scan_local_images, 
-    format_size, run_shell_command, run_speedtest_sync
+    format_size, run_shell_command, run_speedtest_sync, check_port_open
 )
 from modules.alist import get_alist_pid, fix_alist_config, alist_list_files, mount_local_storage
-from modules.cloudflared import get_cloudflared_pid, start_cloudflared, stop_cloudflared
+from modules.cloudflared import get_cloudflared_pid, start_cloudflared, stop_cloudflared, get_cloudflared_log
 from modules.stream import run_ffmpeg_stream, stop_ffmpeg_process, get_stream_status, get_log_content, kill_zombie_processes
 from modules.downloader import aria2_download_task, get_active_downloads
 from modules.keyboards import (
@@ -570,6 +570,34 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log_msg, status, new_pid = await fix_alist_config()
         cft_pid = get_cloudflared_pid()
         await query.edit_message_text(f"🔧 **修复报告**\n\n{log_msg}\n结果: {status}", reply_markup=get_alist_keyboard(bool(new_pid), bool(cft_pid)), parse_mode='Markdown')
+
+    elif data == "btn_alist_diagnose":
+        await query.edit_message_text("🚑 正在诊断网络环境...", parse_mode='Markdown')
+        
+        # 1. 检查端口
+        is_port_open = check_port_open('127.0.0.1', 5244)
+        port_status = "✅ 畅通 (127.0.0.1:5244)" if is_port_open else "❌ 无法连接 (Alist 未启动或绑定错误)"
+        
+        # 2. 检查进程
+        alist_pid = get_alist_pid()
+        proc_status = f"✅ 运行中 (PID: {alist_pid})" if alist_pid else "❌ 未运行"
+        
+        # 3. 读取 Tunnel 日志
+        logs = get_cloudflared_log(lines=10)
+        
+        report = (
+            "🕵️‍♂️ **深度诊断报告**\n\n"
+            f"🔌 **Alist 端口**: {port_status}\n"
+            f"⚙️ **Alist 进程**: {proc_status}\n\n"
+            "📜 **Cloudflare 最新错误日志**:\n"
+            f"```\n{logs}\n```\n\n"
+            "💡 **解决方案**:\n"
+            "1. 如果端口不通 -> 点击 [🔧 修复]\n"
+            "2. 如果日志显示 ERR -> 检查 Token 或重启 Tunnel"
+        )
+        alist_run = bool(alist_pid)
+        cft_run = bool(get_cloudflared_pid())
+        await query.edit_message_text(report, reply_markup=get_alist_keyboard(alist_run, cft_run), parse_mode='Markdown')
             
     # --- 密钥管理 ---
     elif data == "btn_manage_keys":

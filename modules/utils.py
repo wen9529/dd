@@ -61,6 +61,17 @@ async def get_public_ip_async():
     except:
         return "N/A"
 
+def check_port_open(host, port):
+    """检查指定端口是否开放"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(2)
+    try:
+        s.connect((host, port))
+        s.close()
+        return True
+    except:
+        return False
+
 def format_size(size):
     for unit in ['B', 'KB', 'MB', 'GB']:
         if size < 1024:
@@ -162,17 +173,16 @@ def run_speedtest_sync():
 def _scan_files_sync(extensions, extra_paths=[]):
     """
     优化的同步文件扫描
-    使用 os.scandir 替代 os.walk，速度更快
     """
     home = os.path.expanduser("~")
     
     # 扩展搜索路径
     search_paths = [
-        # 1. 常见 App 音乐目录 (针对国产软件优化)
-        "/sdcard/netease/cloudmusic/Music",  # 网易云
-        "/sdcard/qqmusic/song",              # QQ音乐
-        "/sdcard/kgmusic/download",          # 酷狗
-        "/sdcard/kuwo/music",                # 酷我
+        # 1. 常见 App 音乐目录
+        "/sdcard/netease/cloudmusic/Music",
+        "/sdcard/qqmusic/song",
+        "/sdcard/kgmusic/download",
+        "/sdcard/kuwo/music",
 
         # 2. 标准 Android 路径
         "/sdcard/Music",
@@ -180,9 +190,6 @@ def _scan_files_sync(extensions, extra_paths=[]):
         "/sdcard/Movies",
         "/sdcard/Pictures",
         "/sdcard/DCIM",
-        "/sdcard/Telegram",
-        "/sdcard/WeiXin",
-        "/sdcard/Tencent/QQfile_recv",
         
         # 3. 根目录
         "/sdcard",
@@ -205,7 +212,7 @@ def _scan_files_sync(extensions, extra_paths=[]):
                 # 过滤目录
                 dirs[:] = [d for d in dirs if not d.startswith('.') and d not in exclude_dirs]
                 
-                # 严格控制深度：只向下扫 3 层
+                # 严格控制深度
                 current_depth = root.rstrip(os.sep).count(os.sep)
                 if current_depth - base_depth > 3:
                     dirs[:] = []
@@ -219,7 +226,6 @@ def _scan_files_sync(extensions, extra_paths=[]):
                             if full_path in seen_paths: continue
                             
                             stat = os.stat(full_path)
-                            # 过滤掉小于 100KB 的文件 (通常是缓存或缩略图)
                             if stat.st_size < 102400: continue
                             
                             seen_paths.add(full_path)
@@ -234,7 +240,6 @@ def _scan_files_sync(extensions, extra_paths=[]):
         except:
             pass
     
-    # 按修改时间倒序，取前 40 个
     found_files.sort(key=lambda x: x['mtime'], reverse=True)
     return found_files[:40]
 
@@ -266,7 +271,9 @@ async def get_env_report():
     sys_uptime = get_system_uptime()
     bot_uptime = get_bot_uptime()
     
-    storage_access = "✅ 正常" if os.access("/sdcard", os.R_OK) else "❌ 无权限"
+    # 检查本地端口 5244 状态
+    alist_port_open = check_port_open('127.0.0.1', 5244)
+    alist_status_icon = "🟢" if alist_port_open else ("🟡" if alist_pid else "🔴")
 
     return (
         f"🖥 **Termux 状态报告**\n\n"
@@ -281,6 +288,6 @@ async def get_env_report():
         f"• 任务: {'🔴 推流中' if stream_active else '⚪ 空闲'}\n\n"
         f"🗂 **Alist**:\n"
         f"• 状态: {'✅ ' + alist_ver if alist_ver else '❌ 未安装'}\n"
-        f"• 进程: {'🟢 运行中' if alist_pid else '🔴 已停止'}\n\n"
+        f"• 连接: {alist_status_icon} (端口5244: {'通' if alist_port_open else '不通'})\n\n"
         f"⚙️ **资源**: CPU {cpu_usage}% | RAM {mem_usage}"
     )
