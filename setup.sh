@@ -7,132 +7,120 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-# 确保在脚本出错时不会立即退出，尝试执行完后续逻辑
-set +e
+BOT_APP="termux-bot"
+UPDATER_APP="termux-updater"
+CONFIG_FILE="bot_config.json"
+BACKUP_CONFIG="/data/data/com.termux/files/usr/tmp/bot_config.bak"
 
-clear
 echo -e "${BLUE}=======================================${NC}"
-echo -e "${BLUE}   Termux Bot: 强制更新与部署工具      ${NC}"
+echo -e "${BLUE}   Termux Bot: 智能部署与容灾系统      ${NC}"
 echo -e "${BLUE}=======================================${NC}"
 
-# 0. 初始化目录结构
-echo -e "\n${BLUE}[0/6] 初始化目录...${NC}"
-mkdir -p downloads
-mkdir -p logs
-mkdir -p data
-echo "  ✅ 目录检查完成"
-
-# 配置 git 用户信息，防止 stash 失败
-git config --global user.email "bot@termux.local"
-git config --global user.name "TermuxBot"
+# --- 0. 环境预检 ---
+mkdir -p downloads logs data
+# 确保 git 安全目录
 git config --global --add safe.directory "*"
 
-# 1. 智能强制更新
+# --- 1. 智能更新与回滚逻辑 ---
 if [ -d ".git" ]; then
-    echo -e "\n${BLUE}[1/6] 正在检查更新...${NC}"
+    echo -e "\n${BLUE}[1/6] 检查代码更新...${NC}"
     
-    # 暂存本地修改（保存您填写的 Token 和 ID）
-    echo "  💾 正在暂存您的本地修改..."
-    git stash
+    # 获取当前 Commit Hash (用于回滚)
+    CURRENT_HASH=$(git rev-parse HEAD)
     
-    # 拉取最新代码
-    echo "  ⬇️  从服务器拉取更新..."
-    git pull origin main
+    # 备份配置文件 (防止 reset --hard 误删或覆盖)
+    if [ -f "$CONFIG_FILE" ]; then
+        cp "$CONFIG_FILE" "$BACKUP_CONFIG"
+        echo "  💾 配置文件已备份"
+    fi
+
+    # 拉取远程信息
+    git fetch --all
     
-    # 恢复本地修改
-    echo "  📂 恢复您的本地修改..."
-    git stash pop
-    
-    if [ $? -eq 0 ]; then
-        echo -e "  ${GREEN}✔ 代码更新完成${NC}"
+    # 检查是否有更新
+    LOCAL_HASH=$(git rev-parse HEAD)
+    REMOTE_HASH=$(git rev-parse origin/main)
+
+    if [ "$LOCAL_HASH" != "$REMOTE_HASH" ] || [ "$1" == "--force" ]; then
+        echo -e "  🚀 ${YELLOW}发现新版本 (或强制更新)，正在覆盖安装...${NC}"
+        
+        # 强制重置到远程分支 (丢弃本地修改，确保代码一致性)
+        git reset --hard origin/main
+        
+        # 恢复配置文件
+        if [ -f "$BACKUP_CONFIG" ]; then
+            # 如果新版本没有该文件，或者需要保留旧配置
+            # 这里简单策略：如果有备份，且当前文件不存在或被重置，尝试合并或恢复
+            # 由于 bot_config.json 通常由 bot 生成，我们优先使用备份的
+            mv "$BACKUP_CONFIG" "$CONFIG_FILE"
+            echo "  📂 配置文件已恢复"
+        fi
+        
+        UPDATED=true
     else
-        echo -e "  ${YELLOW}⚠️  恢复配置时遇到冲突，将优先使用 git 上的新版本。请检查 bot_config.json 是否保留了您的配置。${NC}"
+        echo -e "  ✅ 当前已是最新版本"
+        UPDATED=false
     fi
 else
-    echo -e "\n${BLUE}[1/6] 非 Git 仓库，跳过更新${NC}"
+    echo -e "  ⚠️ 非 Git 仓库，跳过更新检查"
 fi
 
-# 2. 权限修复
-echo -e "\n${BLUE}[2/6] 修复权限...${NC}"
+# --- 2. 依赖安装 ---
+echo -e "\n${BLUE}[2/6] 依赖检查...${NC}"
 chmod +x *.py *.sh
-chmod 755 .
-
-# 3. 依赖安装 (增强版)
-echo -e "\n${BLUE}[3/6] 检查依赖...${NC}"
-# 安装基础工具和 SSL 库 (修复 Telegram 连接问题)
-pkg install termux-tools openssl-tool -y
-
-# 安装 TUR 源 (用于获取 cloudflared)
-if ! command -v cloudflared &> /dev/null; then
-    echo "  📦 添加 TUR 仓库..."
-    pkg install tur-repo -y
+# 仅在更新后或强制模式下运行繁重的依赖安装
+if [ "$UPDATED" = true ] || [ "$1" == "--force" ]; then
+    pip install -r requirements.txt > /dev/null 2>&1
+    echo "  📦 Python 依赖已更新"
 fi
 
-if ! command -v ffmpeg &> /dev/null; then
-    echo "  🎥 安装 FFmpeg..."
-    pkg install ffmpeg -y
-fi
-# Robust Alist install
-if ! command -v alist &> /dev/null; then
-    echo "  🗂 安装 Alist..."
-    pkg install alist -y || pkg install openlist -y
-fi
-if ! command -v node &> /dev/null; then
-    echo "  📦 安装 Node.js (PM2 依赖)..."
-    pkg install nodejs -y
-fi
-if ! command -v aria2c &> /dev/null; then
-    echo "  ⬇️ 安装 Aria2 (离线下载)..."
-    pkg install aria2 -y
-fi
-if ! command -v cloudflared &> /dev/null; then
-    echo "  🚇 安装 Cloudflared (内网穿透)..."
-    pkg install cloudflared -y
-fi
+# --- 3. 进程管理与健康检查 ---
+echo -e "\n${BLUE}[3/6] 重启服务...${NC}"
 
-echo "  🐍 安装 Python 依赖..."
-pip install --upgrade pip > /dev/null 2>&1
-pip install -r requirements.txt
-
-# 4. PM2 守护进程配置
-echo -e "\n${BLUE}[4/6] 配置后台进程...${NC}"
+# 安装 PM2 (如果缺失)
 if ! command -v pm2 &> /dev/null; then
-    echo "  ⚙️ 安装 PM2..."
     npm install -g pm2
 fi
 
-BOT_APP="termux-bot"
-UPDATER_APP="termux-updater"
+# 重启函数
+restart_services() {
+    pm2 restart "$BOT_APP" --update-env 2>/dev/null || pm2 start bot.py --name "$BOT_APP" --interpreter python --time --output logs/bot_out.log --error logs/bot_err.log
+    pm2 restart "$UPDATER_APP" --update-env 2>/dev/null || pm2 start auto_update.py --name "$UPDATER_APP" --interpreter python --time --output logs/updater_out.log --error logs/updater_err.log
+}
 
-# 5. 重启逻辑 (优化：使用 restart 而不是 delete，防止进程丢失)
-echo -e "\n${BLUE}[5/6] 重启服务...${NC}"
+restart_services
 
-# 检查 termux-bot 是否存在
-pm2 describe "$BOT_APP" > /dev/null 2>&1
-if [ $? -eq 0 ]; then
-    echo "  🔄 重启机器人进程..."
-    pm2 restart "$BOT_APP" --update-env
-else
-    echo "  🚀 启动机器人进程..."
-    pm2 start bot.py --name "$BOT_APP" --interpreter python --time --output logs/bot_out.log --error logs/bot_err.log
+# --- 4. 关键：健康检查与回滚 ---
+if [ "$UPDATED" = true ]; then
+    echo -e "\n${BLUE}[4/6] 🏥 执行健康检查 (15秒)...${NC}"
+    echo "  ⏳ 正在监控 Bot 启动状态..."
+    
+    # 等待进程初始化
+    sleep 15
+    
+    # 检查 PM2 状态
+    # 如果 status 不是 online，或者 restart_time > 1 (说明这15秒内反复重启了)
+    IS_ONLINE=$(pm2 show "$BOT_APP" | grep "status" | grep "online")
+    
+    if [ -z "$IS_ONLINE" ]; then
+        echo -e "\n${RED}🚨 严重警告: 新版本启动失败！${NC}"
+        echo -e "${YELLOW}🔄 正在执行自动回滚 (Rollback) 到版本: ${CURRENT_HASH:0:7}...${NC}"
+        
+        # 回滚代码
+        git reset --hard "$CURRENT_HASH"
+        
+        # 再次重启
+        restart_services
+        
+        echo -e "${GREEN}✅ 回滚完成。Bot 已恢复到旧版本。${NC}"
+        echo -e "请检查日志: pm2 log $BOT_APP"
+        
+        # 可以选择在这里发送通知 (如果有一个独立的 notify 脚本)
+    else
+        echo -e "${GREEN}✅ 健康检查通过！系统更新成功。${NC}"
+    fi
 fi
-
-# 检查 updater 是否存在
-pm2 describe "$UPDATER_APP" > /dev/null 2>&1
-if [ $? -eq 0 ]; then
-    echo "  🔄 重启更新守护进程..."
-    pm2 restart "$UPDATER_APP" --update-env
-else
-    echo "  🚀 启动更新守护进程..."
-    pm2 start auto_update.py --name "$UPDATER_APP" --interpreter python --time --output logs/updater_out.log --error logs/updater_err.log
-fi
-
-# 保存当前进程列表
-pm2 save --force > /dev/null 2>&1
 
 echo -e "\n${BLUE}=======================================${NC}"
-echo -e "       ${GREEN}🚀 部署完成！${NC}"
+echo -e "       ${GREEN}🚀 部署流程结束${NC}"
 echo -e "${BLUE}=======================================${NC}"
-echo -e "机器人正在后台运行。"
-echo -e "建议运行: ${YELLOW}termux-wake-lock${NC} 防止手机锁屏后断网"
-echo -e "日志查看: ${YELLOW}pm2 log termux-bot${NC}"

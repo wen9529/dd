@@ -650,9 +650,21 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "♻️ 重启机器人":
         context.user_data['state'] = None
-        await update.message.reply_text("♻️ **系统更新/重启中...**\n正在拉取代码并重启，请稍候...", parse_mode='Markdown')
+        
+        await update.message.reply_text(
+            "♻️ **系统智能更新系统**\n\n"
+            "⚠️ **注意**: 系统将强制拉取云端代码覆盖本地。\n"
+            "⏳ **流程**: 备份 -> 强制更新 -> 重启 -> 健康检查\n"
+            "🛡️ **安全**: 如果更新后启动失败，系统将自动回滚。\n\n"
+            "🚀 正在后台执行，请稍候...", 
+            parse_mode='Markdown'
+        )
+        
+        # 强制保存配置，防止覆盖时丢失
         save_config({'token': TOKEN, 'owner_id': OWNER_ID})
-        subprocess.Popen("nohup bash setup.sh > update.log 2>&1 &", shell=True)
+        
+        # 使用 --force 参数确保即使 hash 一样也重装依赖和重启
+        subprocess.Popen("nohup bash setup.sh --force > logs/update_trigger.log 2>&1 &", shell=True)
         return
 
     if text == "⚙️ 设置":
