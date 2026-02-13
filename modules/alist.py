@@ -35,7 +35,7 @@ async def mount_local_storage():
     if not token:
         return False, "请先配置 Alist Token (在设置菜单中)"
     
-    base_url = "http://127.0.0.1:5244"
+    base_url = config.get('alist_host', "http://127.0.0.1:5244")
     api_url = f"{base_url}/api/admin/storage/create"
     
     headers = {
@@ -139,7 +139,7 @@ def alist_list_files(path="/", page=1, per_page=0):
     """
     config = load_config()
     token = config.get('alist_token', '')
-    base_url = "http://127.0.0.1:5244"
+    base_url = config.get('alist_host', "http://127.0.0.1:5244")
     
     api_url = f"{base_url}/api/fs/list"
     headers = {

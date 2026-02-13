@@ -108,7 +108,15 @@ def load_config():
         'stream_keys': config.get('stream_keys', []),
         'active_key_index': config.get('active_key_index', 0),
         'alist_token': os.getenv('ALIST_TOKEN', config.get('alist_token', '')),
-        'cloudflared_token': os.getenv('CLOUDFLARED_TOKEN', config.get('cloudflared_token', ''))
+        'alist_host': os.getenv('ALIST_HOST', config.get('alist_host', 'http://127.0.0.1:5244')),
+        'cloudflared_token': os.getenv('CLOUDFLARED_TOKEN', config.get('cloudflared_token', '')),
+        
+        # --- 高级推流配置 ---
+        'stream_width': int(os.getenv('STREAM_WIDTH', config.get('stream_width', 1280))),
+        'stream_height': int(os.getenv('STREAM_HEIGHT', config.get('stream_height', 720))),
+        'stream_fps': int(os.getenv('STREAM_FPS', config.get('stream_fps', 25))),
+        'stream_preset': os.getenv('STREAM_PRESET', config.get('stream_preset', 'veryfast')),
+        'stream_bitrate': os.getenv('STREAM_BITRATE', config.get('stream_bitrate', '2000k')),
     }
     
     return final_config

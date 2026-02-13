@@ -71,6 +71,15 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     stream_keys = config.get('stream_keys', [])
     active_index = config.get('active_key_index', 0)
     
+    # 高级推流参数 (从 .env 读取)
+    stream_width = config.get('stream_width', 1280)
+    stream_height = config.get('stream_height', 720)
+    stream_fps = config.get('stream_fps', 25)
+    stream_preset = config.get('stream_preset', 'veryfast')
+    stream_bitrate = config.get('stream_bitrate', '2000k')
+    
+    alist_host = config.get('alist_host', "http://127.0.0.1:5244")
+
     key = ""
     current_key_name = "未命名"
     if stream_keys and 0 <= active_index < len(stream_keys):
@@ -91,7 +100,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     # 智能判断 Alist 路径
     if not is_local_file and not src.startswith("http") and not src.startswith("rtmp"):
         encoded_src = quote(src, safe='/')
-        src = f"http://127.0.0.1:5244/d{encoded_src}"
+        src = f"{alist_host}/d{encoded_src}"
     
     # --- 模式判断 ---
     display_rtmp = rtmp_url[:20] + "..." + rtmp_url[-5:] if len(rtmp_url) > 30 else rtmp_url
@@ -111,7 +120,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     status_msg = None
     if message:
         status_msg = await message.reply_text(
-            f"🚀 启动标准推流 (720p/25fps)...\n\n"
+            f"🚀 启动推流 ({stream_width}x{stream_height}@{stream_fps}fps)...\n\n"
             f"📄 {os.path.basename(raw_src)}\n"
             f"🔑 {current_key_name}\n"
             f"📡 {display_rtmp}\n"
@@ -137,10 +146,10 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             "-rw_timeout", "15000000"
         ])
 
-    # --- 场景分歧 (画质优化版) ---
+    # --- 场景分歧 (动态画质) ---
 
-    # 复杂滤镜：缩放并加黑边，保持 1280x720 比例，不拉伸
-    SCALE_FILTER = "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2"
+    # 滤镜：动态分辨率缩放
+    SCALE_FILTER = f"scale={stream_width}:{stream_height}:force_original_aspect_ratio=decrease,pad={stream_width}:{stream_height}:(ow-iw)/2:(oh-ih)/2"
 
     if is_slideshow:
         # === 轮播模式 ===
@@ -170,8 +179,8 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
             "-map", "0:v:0",
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
             "-pix_fmt", "yuv420p",
-            "-vf", f"{SCALE_FILTER},fps=25", # 使用优化后的滤镜
-            "-g", "50", 
+            "-vf", f"{SCALE_FILTER},fps={stream_fps}", 
+            "-g", str(stream_fps * 2), 
             "-b:v", "1000k", "-maxrate", "1500k", "-bufsize", "2000k",
 
             "-map", "1:a:0",
@@ -182,14 +191,14 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     elif is_single_image:
         # === 单图模式 ===
         cmd.extend([
-            "-loop", "1", "-framerate", "25", "-i", background_image, # [0]
+            "-loop", "1", "-framerate", str(stream_fps), "-i", background_image, # [0]
             "-i", src,                                                # [1]
             
             "-map", "0:v:0",
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
             "-pix_fmt", "yuv420p",
             "-vf", f"{SCALE_FILTER},format=yuv420p",
-            "-g", "50",
+            "-g", str(stream_fps * 2),
             "-b:v", "800k", "-maxrate", "1200k", "-bufsize", "2000k",
 
             "-map", "1:a:0",
@@ -203,11 +212,11 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
         cmd.append(src)
         
         cmd.extend([
-            "-c:v", "libx264", "-preset", "veryfast",
+            "-c:v", "libx264", "-preset", stream_preset,
             # 如果原视频不是 16:9，也会加黑边，保持专业感
             "-vf", f"{SCALE_FILTER},format=yuv420p",
-            "-g", "60",
-            "-b:v", "2000k", "-maxrate", "2500k", "-bufsize", "4000k",
+            "-g", str(stream_fps * 2),
+            "-b:v", stream_bitrate, "-maxrate", stream_bitrate, "-bufsize", str(int(stream_bitrate.replace('k',''))*2)+'k',
             "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k"
         ])
 
@@ -244,7 +253,7 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
                     f"✅ 推流运行中\n"
                     f"PID: {ffmpeg_process.pid}\n"
                     f"模式: {mode_text}\n"
-                    f"画质: 720p (自适应缩放)\n\n"
+                    f"画质: {stream_width}x{stream_height} (自适应)\n\n"
                     f"💡 请确保推流码已正确配置。",
                     reply_markup=keyboard
                 )
