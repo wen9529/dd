@@ -10,6 +10,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 
 # --- 导入模块 ---
+# 注意：不要导入 TOKEN，它应该通过 load_config() 动态获取
 from modules.config import load_config, save_config, is_owner, CONFIG_FILE
 from modules.utils import (
     get_local_ip, get_all_ips, get_env_report, scan_local_audio, scan_local_images, 

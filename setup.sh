@@ -126,7 +126,7 @@ echo -e "\n${BLUE}[4/6] 启动服务...${NC}"
 CF_TOKEN=""
 if [ -f ".env" ]; then
     # 使用 awk/sed 处理可能的引号和空格，更稳健
-    CF_TOKEN=$(grep "^CLOUDFLARED_TOKEN" .env | awk -F '=' '{print $2}' | tr -d '"' | tr -d "'")
+    CF_TOKEN=$(grep "^CLOUDFLARED_TOKEN" .env 2>/dev/null | awk -F '=' '{print $2}' | tr -d '"' | tr -d "'")
 fi
 
 # 重启函数
@@ -138,16 +138,18 @@ restart_services() {
     pm2 restart "$UPDATER_APP" --update-env 2>/dev/null || pm2 start auto_update.py --name "$UPDATER_APP" --interpreter python --time --output logs/updater_out.log --error logs/updater_err.log
 
     # 3. Alist (解释器 none, 二进制)
+    # 移除 'time' 参数，修复启动错误
     if command -v alist &> /dev/null; then
         echo -e "  🗂 启动 Alist..."
-        pm2 restart "$ALIST_APP" 2>/dev/null || pm2 start alist --name "$ALIST_APP" --interpreter none -- time -- server
+        pm2 restart "$ALIST_APP" 2>/dev/null || pm2 start alist --name "$ALIST_APP" --interpreter none -- server
     fi
 
     # 4. Tunnel (解释器 none, 二进制)
+    # 移除 'time' 参数，修复启动错误
     if [ -n "$CF_TOKEN" ] && [ "${#CF_TOKEN}" -gt 20 ]; then
         echo -e "  🚇 启动固定隧道 (Cloudflared)..."
         echo -e "     Token 前缀: ${CF_TOKEN:0:10}..."
-        pm2 restart "$TUNNEL_APP" 2>/dev/null || pm2 start cloudflared --name "$TUNNEL_APP" --interpreter none -- time -- tunnel run --token "$CF_TOKEN"
+        pm2 restart "$TUNNEL_APP" 2>/dev/null || pm2 start cloudflared --name "$TUNNEL_APP" --interpreter none -- tunnel run --token "$CF_TOKEN"
     else
         echo -e "  ⚪ 跳过隧道启动: 未在 .env 找到有效 CLOUDFLARED_TOKEN"
     fi
@@ -174,8 +176,20 @@ fi
 echo -e "\n${BLUE}[6/6] 保存进程状态...${NC}"
 pm2 save
 
+# 检查 Token 状态
+TOKEN_STATUS="❓ 未知"
+if [ -f ".env" ]; then
+    if grep -q "TG_BOT_TOKEN=." .env 2>/dev/null; then
+        TOKEN_STATUS="✅ 已配置"
+    else
+        TOKEN_STATUS="❌ 未配置 (Bot将进入休眠，请编辑 .env)"
+    fi
+else
+    TOKEN_STATUS="❌ .env 文件缺失"
+fi
+
 echo -e "\n${BLUE}=======================================${NC}"
 echo -e "       ${GREEN}🚀 系统运行中${NC}"
-echo -e "       Bot Token 状态: $(if grep -q "TG_BOT_TOKEN=." .env; then echo "✅ 已配置"; else echo "❌ 未配置 (Bot将进入休眠)"; fi)"
+echo -e "       Bot Token 状态: ${TOKEN_STATUS}"
 echo -e "       输入 ${YELLOW}pm2 list${NC} 查看详细状态"
 echo -e "${BLUE}=======================================${NC}"
