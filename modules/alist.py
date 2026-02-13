@@ -117,6 +117,7 @@ async def fix_alist_config():
     
     # 2. 查找并修改配置
     log_msg = "🛠 **执行修复操作...**\n"
+    # Alist V3 在 Termux 下通常在当前目录 data/config.json 或 ~/.alist/data/config.json
     search_paths = [
         os.path.join(os.getcwd(), "data", "config.json"),
         os.path.expanduser("~/.alist/data/config.json"),
@@ -131,36 +132,56 @@ async def fix_alist_config():
                     config_data = json.load(f)
                 
                 changed = False
+                
                 # 确保 scheme 存在
                 if 'scheme' not in config_data:
                     config_data['scheme'] = {}
                     changed = True
                 
-                # 强制修改 scheme.address
-                if isinstance(config_data['scheme'], dict):
-                    if config_data['scheme'].get('address') != '0.0.0.0':
-                        config_data['scheme']['address'] = '0.0.0.0'
-                        changed = True
+                scheme = config_data['scheme']
+
+                # 1. 强制监听所有接口 0.0.0.0 (解决 Cloudflare 无法连接 127.0.0.1 的部分情况)
+                if scheme.get('address') != '0.0.0.0':
+                    scheme['address'] = '0.0.0.0'
+                    changed = True
+                    log_msg += "  - 修正监听地址为 0.0.0.0\n"
+
+                # 2. 强制端口为 5244 (标准端口)
+                if int(scheme.get('http_port', 0)) != 5244:
+                    scheme['http_port'] = 5244
+                    changed = True
+                    log_msg += "  - 修正端口为 5244\n"
                 
+                # 3. 强制关闭强制 HTTPS (避免内网访问 SSL 错误)
+                if scheme.get('force_https') is True:
+                    scheme['force_https'] = False
+                    changed = True
+                    log_msg += "  - 关闭强制 HTTPS\n"
+
                 if changed:
                     with open(p, 'w') as f:
                         json.dump(config_data, f, indent=4)
-                    log_msg += f"✅ 已修改配置文件: `{p}`\n"
+                    log_msg += f"✅ 已更新配置文件: `{p}`\n"
                 else:
-                    log_msg += f"👌 配置无需修改: `{p}`\n"
+                    log_msg += f"👌 配置正常: `{p}`\n"
                     
             except Exception as e:
-                log_msg += f"❌ 配置文件错误 `{p}`: {str(e)}\n"
+                log_msg += f"❌ 配置文件解析错误 `{p}`: {str(e)}\n"
     
     if not found_config:
-            log_msg += "⚠️ 未找到配置文件，尝试启动以生成默认配置。\n"
+            log_msg += "⚠️ 未找到配置文件，Alist 将使用默认设置启动 (请稍后再次执行修复以确认)。\n"
 
     # 3. 重启 Alist
-    subprocess.Popen(["alist", "server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    await asyncio.sleep(3)
+    # 使用 pm2 启动以保持一致性
+    subprocess.run("pm2 restart termux-alist", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # 备用方案：如果 pm2 没起来
+    if not get_alist_pid():
+        subprocess.Popen(["alist", "server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    await asyncio.sleep(4)
     
     new_pid = get_alist_pid()
-    status = "✅ 重启成功" if new_pid else "❌ 重启失败"
+    status = "✅ 重启成功 (端口 5244)" if new_pid else "❌ 重启失败"
     
     return log_msg, status, new_pid
 
