@@ -1,9 +1,13 @@
 import asyncio
 import subprocess
 import os
+import logging
 from urllib.parse import quote
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from .config import load_config, FFMPEG_LOG_FILE
+from .alist import resolve_alist_path
+
+logger = logging.getLogger("Stream")
 
 # 全局变量用于存储 FFmpeg 进程
 ffmpeg_process = None
@@ -96,11 +100,28 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     # --- 处理文件路径 ---
     src = raw_src.strip()
     is_local_file = os.path.exists(src)
+    resolved_via_api = False
     
     # 智能判断 Alist 路径
     if not is_local_file and not src.startswith("http") and not src.startswith("rtmp"):
-        encoded_src = quote(src, safe='/')
-        src = f"{alist_host}/d{encoded_src}"
+        # 尝试通过 API 解析真实链接 (解决 401 和重定向问题)
+        try:
+            loop = asyncio.get_running_loop()
+            real_url = await loop.run_in_executor(None, lambda: resolve_alist_path(src))
+            
+            if real_url:
+                src = real_url
+                resolved_via_api = True
+                logger.info("Alist path resolved successfully via API.")
+            else:
+                # Fallback to old /d/ method
+                encoded_src = quote(src, safe='/')
+                src = f"{alist_host}/d{encoded_src}"
+                logger.warning("Failed to resolve path, using fallback /d/ url.")
+        except Exception as e:
+            logger.error(f"Path resolution error: {e}")
+            encoded_src = quote(src, safe='/')
+            src = f"{alist_host}/d{encoded_src}"
     
     # --- 模式判断 ---
     display_rtmp = rtmp_url[:20] + "..." + rtmp_url[-5:] if len(rtmp_url) > 30 else rtmp_url
@@ -134,10 +155,24 @@ async def run_ffmpeg_stream(update: Update, raw_src: str, custom_rtmp: str = Non
     if is_local_file:
         cmd.append("-re")
     else:
-        alist_token = config.get('alist_token', '')
-        if alist_token:
-            cmd.extend(["-headers", f"Authorization: {alist_token}\r\nUser-Agent: TermuxBot\r\n"])
+        # Header 逻辑优化:
+        # 1. 如果是 API 解析出的外部链接 (signed url)，通常不需要 Auth Header，避免干扰 (400 Bad Request)
+        # 2. 如果是 fallback 的 /d/ 链接，或者解析后依然是 alist host，则添加 Token
+        
+        need_auth = False
+        if not resolved_via_api:
+            need_auth = True
+        elif alist_host in src:
+            need_auth = True
+            
+        if need_auth:
+            alist_token = config.get('alist_token', '')
+            if alist_token:
+                cmd.extend(["-headers", f"Authorization: {alist_token}\r\nUser-Agent: TermuxBot\r\n"])
+            else:
+                cmd.extend(["-user_agent", "TermuxBot"])
         else:
+            # 外部链接只加 UA
             cmd.extend(["-user_agent", "TermuxBot"])
         
         cmd.extend([

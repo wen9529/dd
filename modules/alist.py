@@ -104,6 +104,54 @@ def get_auth_token():
             
     return ""
 
+def resolve_alist_path(path):
+    """
+    通过 API 获取文件的真实下载链接
+    包含 401 自动重试逻辑 (Token 过期自动刷新)
+    """
+    config = load_config()
+    base_url = config.get('alist_host', "http://127.0.0.1:5244")
+    api_url = f"{base_url}/api/fs/get"
+    
+    # 定义请求函数
+    def _do_request(_token):
+        headers = {
+            "User-Agent": "TermuxBot",
+            "Content-Type": "application/json"
+        }
+        if _token:
+            headers["Authorization"] = _token
+            
+        payload = {
+            "path": path,
+            "password": ""
+        }
+        return requests.post(api_url, json=payload, headers=headers, timeout=8)
+
+    # 第一次尝试
+    token = get_auth_token()
+    try:
+        resp = _do_request(token)
+        data = resp.json()
+        
+        # 处理 401 Unauthorized (Token 失效)
+        if resp.status_code == 401 or data.get("code") == 401:
+            print("Bot: Alist Token 已失效，尝试重新登录...")
+            save_config({'alist_token': ''}) # 清除旧 Token
+            token = get_auth_token() # 触发重新获取
+            if token:
+                resp = _do_request(token) # 重试
+                data = resp.json()
+
+        if data.get("code") == 200:
+            return data.get("data", {}).get("raw_url")
+        else:
+            print(f"Resolve Path Error: {data.get('message')}")
+    except Exception as e:
+        print(f"Resolve Path Exception: {e}")
+        
+    return None
+
 async def mount_local_storage():
     """调用 API 挂载本机存储"""
     config = load_config()
